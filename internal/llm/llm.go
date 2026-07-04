@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/capt4ce/custom-agent/internal/config"
@@ -42,7 +43,24 @@ func NewProvider(c config.ModelConfig) Provider {
 type CodexProvider struct{ Config config.ModelConfig }
 
 func (p CodexProvider) Chat(ctx context.Context, m []Message, t []ToolSchema) (ChatResponse, error) {
-	return ChatResponse{}, fmt.Errorf("codex subscription adapter not configured yet; wire OAuth/session transport here")
+	if p.Config.Command == "" {
+		return ChatResponse{}, fmt.Errorf("codex command not configured")
+	}
+	b, err := json.Marshal(map[string]any{"messages": m, "tools": t, "model": p.Config.Model})
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	cmd := exec.CommandContext(ctx, p.Config.Command)
+	cmd.Stdin = bytes.NewReader(b)
+	out, err := cmd.Output()
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	var res ChatResponse
+	if err := json.Unmarshal(out, &res); err != nil {
+		return ChatResponse{}, err
+	}
+	return res, nil
 }
 
 type OpenAICompatible struct {
@@ -55,9 +73,13 @@ func (p OpenAICompatible) Chat(ctx context.Context, messages []Message, tools []
 	if key == "" {
 		return ChatResponse{Content: "LLM provider is not configured: missing " + p.Config.APIKeyEnv}, nil
 	}
+	base := strings.TrimRight(p.Config.BaseURL, "/")
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
 	body := map[string]any{"model": p.Config.Model, "messages": messages, "tools": openAITools(tools)}
 	b, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.Config.BaseURL, "/")+"/chat/completions", bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(b))
 	if err != nil {
 		return ChatResponse{}, err
 	}
