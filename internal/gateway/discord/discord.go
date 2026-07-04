@@ -24,6 +24,20 @@ func Run(ctx context.Context, cfg config.Config, a *agent.Agent) error {
 	for _, id := range cfg.Discord.AllowedChannelIDs {
 		allowed[id] = true
 	}
+	s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.Type != discordgo.InteractionMessageComponent {
+			return
+		}
+		decision := i.MessageComponentData().CustomID
+		if decision != "approve" && decision != "deny" {
+			return
+		}
+		content := "Denied."
+		if decision == "approve" {
+			content = "Approved. Re-run the request with approved=true where applicable."
+		}
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral}})
+	})
 	s.AddHandler(func(_ *discordgo.Session, m *discordgo.MessageCreate) {
 		if m.Author.Bot || (len(allowed) > 0 && !allowed[m.ChannelID]) {
 			return

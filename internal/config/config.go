@@ -27,6 +27,7 @@ type ModelConfig struct {
 	Model     string `yaml:"model"`
 	BaseURL   string `yaml:"base_url"`
 	APIKeyEnv string `yaml:"api_key_env"`
+	Command   string `yaml:"command"`
 }
 
 type Profile struct {

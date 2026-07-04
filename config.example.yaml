@@ -15,13 +15,13 @@ profiles:
     name: "default"
     workspace_roots:
       - "."
-    file_access: "workspace" # disabled | workspace | configured_roots | home_with_approval
+    file_access: "workspace" # disabled | workspace | home
     enabled_tools:
-      - "file.read"
-      - "file.create"
-      - "file.update"
-      - "file.search"
-      - "shell.run"
+      - "file_read"
+      - "file_create"
+      - "file_update"
+      - "file_search"
+      - "shell_run"
     skills_dir: "./skills"
 
 discord:
@@ -31,7 +31,10 @@ discord:
   allowed_channel_ids: []
 
 mcp_servers: []
-# - name: "example"
+# - name: "local-tools"
 #   transport: "stdio"
 #   command: "node"
 #   args: ["server.js"]
+# - name: "remote-tools"
+#   transport: "http"
+#   url: "http://127.0.0.1:3001/mcp"

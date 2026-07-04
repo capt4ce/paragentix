@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
@@ -99,3 +100,86 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, strftime
 `
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+func (db *DB) CreateSession(ctx context.Context, s Session) error {
+	now := Now()
+	if s.CreatedAt == "" {
+		s.CreatedAt = now
+	}
+	if s.UpdatedAt == "" {
+		s.UpdatedAt = now
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO sessions(id, profile_id, source, external_ref, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, s.ID, s.ProfileID, s.Source, s.ExternalRef, s.Title, s.CreatedAt, s.UpdatedAt)
+	return err
+}
+func (db *DB) GetSession(ctx context.Context, id string) (Session, error) {
+	var s Session
+	err := db.QueryRowContext(ctx, `SELECT id, profile_id, source, external_ref, title, created_at, updated_at FROM sessions WHERE id=?`, id).Scan(&s.ID, &s.ProfileID, &s.Source, &s.ExternalRef, &s.Title, &s.CreatedAt, &s.UpdatedAt)
+	return s, err
+}
+func (db *DB) TouchSession(ctx context.Context, id string) error {
+	_, err := db.ExecContext(ctx, `UPDATE sessions SET updated_at=? WHERE id=?`, Now(), id)
+	return err
+}
+
+func (db *DB) AppendMessage(ctx context.Context, m Message) (int64, error) {
+	if m.CreatedAt == "" {
+		m.CreatedAt = Now()
+	}
+	res, err := db.ExecContext(ctx, `INSERT INTO messages(session_id, role, content_json, created_at) VALUES (?, ?, ?, ?)`, m.SessionID, m.Role, m.Content, m.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	_ = db.TouchSession(ctx, m.SessionID)
+	return res.LastInsertId()
+}
+func (db *DB) AppendJSONMessage(ctx context.Context, sessionID, role string, v any) (int64, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return 0, err
+	}
+	return db.AppendMessage(ctx, Message{SessionID: sessionID, Role: role, Content: b})
+}
+func (db *DB) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, session_id, role, content_json, created_at FROM messages WHERE session_id=? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) UpsertMemory(ctx context.Context, m Memory) error {
+	now := Now()
+	if m.CreatedAt == "" {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+	_, err := db.ExecContext(ctx, `INSERT INTO memories(id, profile_id, scope, content, tags_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET content=excluded.content, tags_json=excluded.tags_json, updated_at=excluded.updated_at`, m.ID, m.ProfileID, m.Scope, m.Content, m.Tags, m.CreatedAt, m.UpdatedAt)
+	return err
+}
+func (db *DB) ListMemories(ctx context.Context, profileID, scope string) ([]Memory, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, profile_id, scope, content, tags_json, created_at, updated_at FROM memories WHERE profile_id=? AND (?='' OR scope=?) ORDER BY updated_at`, profileID, scope, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
+		var m Memory
+		if err := rows.Scan(&m.ID, &m.ProfileID, &m.Scope, &m.Content, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
