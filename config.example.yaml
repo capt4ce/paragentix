@@ -1,0 +1,37 @@
+server:
+  addr: ":8080"
+
+storage:
+  path: "./data/agent.db"
+
+model:
+  provider: "openai-compatible"
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com/v1"
+  api_key_env: "DEEPSEEK_API_KEY"
+
+profiles:
+  default:
+    name: "default"
+    workspace_roots:
+      - "."
+    file_access: "workspace" # disabled | workspace | configured_roots | home_with_approval
+    enabled_tools:
+      - "file.read"
+      - "file.create"
+      - "file.update"
+      - "file.search"
+      - "shell.run"
+    skills_dir: "./skills"
+
+discord:
+  enabled: false
+  token_env: "DISCORD_BOT_TOKEN"
+  default_profile: "default"
+  allowed_channel_ids: []
+
+mcp_servers: []
+# - name: "example"
+#   transport: "stdio"
+#   command: "node"
+#   args: ["server.js"]
