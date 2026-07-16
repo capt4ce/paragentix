@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,6 +26,50 @@ func req(t *testing.T, h http.Handler, c *http.Cookie, method, path, body string
 	}
 	return w, out
 }
+func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(filepath.Join(t.TempDir(), "db"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner@example.com","password":"password1"}`)
+	_, other := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"other@example.com","password":"password2"}`)
+
+	w, _ := req(t, h, owner, "GET", "/api/workspaces", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"root":"`+root+`"`) {
+		t.Fatalf("workspaces: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, owner, "POST", "/api/projects", `{"name":"App","directory":"project"}`)
+	if w.Code != 201 {
+		t.Fatalf("project: %d %s", w.Code, w.Body.String())
+	}
+	var projectOut map[string]any
+	json.Unmarshal(w.Body.Bytes(), &projectOut)
+	projectID := int64(projectOut["id"].(float64))
+	w, _ = req(t, h, owner, "POST", "/api/projects", `{"name":"Escape","directory":"../escape"}`)
+	if w.Code != 400 {
+		t.Fatalf("directory escape accepted: %d", w.Code)
+	}
+	w, _ = req(t, h, other, "GET", "/api/projects/"+itoa(projectID), "")
+	if w.Code != 404 {
+		t.Fatalf("cross-user project access=%d", w.Code)
+	}
+	w, _ = req(t, h, owner, "POST", "/api/cli-tools", `{"name":"Shell","argv":["sh","-c","printf ok"]}`)
+	if w.Code != 201 {
+		t.Fatalf("tool: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, owner, "GET", "/api/boards", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"columns"`) {
+		t.Fatalf("board alias: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestFreshAccountLanesReturnEmptyJobsArray(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {

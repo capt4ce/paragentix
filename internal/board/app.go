@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS lanes(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),cli_tool TEXT NOT NULL CHECK(cli_tool IN('codex','claude')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,UNIQUE(lane_id,position));
 CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,attempt INTEGER NOT NULL,tmux_session TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,ended_at TEXT,result_summary TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));`)
+	if e != nil {
+		return e
+	}
+	_, e = a.DB.Exec(`CREATE TABLE IF NOT EXISTS workspaces(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,root TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,root));
+CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,name TEXT NOT NULL,directory TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(workspace_id,directory));
+CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,argv_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name));`)
+	if e == nil {
+		_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspaces(user_id,name,root) SELECT user_id,'Default',workspace_root FROM user_settings`)
+	}
 	return e
 }
 func jsonOut(w http.ResponseWriter, status int, v any) {
@@ -131,6 +140,10 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/jobs/", a.auth(http.HandlerFunc(a.jobPath)))
 	m.Handle("/api/settings", a.auth(http.HandlerFunc(a.settings)))
 	m.Handle("/api/cli-tools", a.auth(http.HandlerFunc(a.tools)))
+	m.Handle("/api/workspaces", a.auth(http.HandlerFunc(a.workspaces)))
+	m.Handle("/api/projects", a.auth(http.HandlerFunc(a.projects)))
+	m.Handle("/api/projects/", a.auth(http.HandlerFunc(a.projectPath)))
+	m.Handle("/api/boards", a.auth(http.HandlerFunc(a.boards)))
 	sub, _ := fs.Sub(web, "web")
 	files := http.FileServer(http.FS(sub))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +187,7 @@ func (a *App) signup(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := res.LastInsertId()
 	tx.Exec("INSERT INTO user_settings(user_id,workspace_root) VALUES(?,?)", id, a.Workspace)
+	tx.Exec("INSERT INTO workspaces(user_id,name,root) VALUES(?,'Default',?)", id, a.Workspace)
 	tx.Exec("INSERT INTO lanes(user_id,name,position) VALUES(?,'Lane 1',0)", id)
 	tx.Commit()
 	a.newSession(w, id)
@@ -532,8 +546,124 @@ func (a *App) settings(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, map[string]string{"default_cli": cli, "workspace_root": root})
 }
 func available(name string) bool { _, e := exec.LookPath(name); return e == nil }
+func (a *App) workspaces(w http.ResponseWriter, r *http.Request) {
+	rows, _ := a.DB.Query("SELECT id,name,root FROM workspaces WHERE user_id=? ORDER BY id", uid(r))
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var name, root string
+		rows.Scan(&id, &name, &root)
+		out = append(out, map[string]any{"id": id, "name": name, "root": root})
+	}
+	jsonOut(w, 200, out)
+}
+func safeProjectDir(root, directory string) (string, bool) {
+	root, _ = filepath.Abs(root)
+	path, e := filepath.Abs(filepath.Join(root, directory))
+	return path, e == nil && path != root && strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+func (a *App) projects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	var x struct {
+		Name, Directory string
+		WorkspaceID     int64 `json:"workspace_id"`
+	}
+	if decode(r, &x) != nil || strings.TrimSpace(x.Name) == "" {
+		fail(w, 400, "name and directory required")
+		return
+	}
+	var wid int64
+	var root string
+	if x.WorkspaceID == 0 {
+		a.DB.QueryRow("SELECT id,root FROM workspaces WHERE user_id=? ORDER BY id LIMIT 1", uid(r)).Scan(&wid, &root)
+	} else {
+		wid = x.WorkspaceID
+		a.DB.QueryRow("SELECT root FROM workspaces WHERE id=? AND user_id=?", wid, uid(r)).Scan(&root)
+	}
+	path, ok := safeProjectDir(root, x.Directory)
+	info, e := os.Stat(path)
+	if !ok || e != nil || !info.IsDir() {
+		fail(w, 400, "directory must be an existing path inside workspace")
+		return
+	}
+	res, e := a.DB.Exec("INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,?,?)", uid(r), wid, strings.TrimSpace(x.Name), path)
+	if e != nil {
+		fail(w, 409, "project unavailable")
+		return
+	}
+	id, _ := res.LastInsertId()
+	jsonOut(w, 201, map[string]any{"id": id, "directory": path})
+}
+func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
+	id, e := pathID(strings.TrimPrefix(r.URL.Path, "/api/projects/"))
+	if e != nil {
+		fail(w, 404, "not found")
+		return
+	}
+	var name, directory string
+	e = a.DB.QueryRow("SELECT name,directory FROM projects WHERE id=? AND user_id=?", id, uid(r)).Scan(&name, &directory)
+	if e != nil {
+		fail(w, 404, "not found")
+		return
+	}
+	jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory})
+}
+func (a *App) boards(w http.ResponseWriter, r *http.Request) {
+	rw := httptestResponse{ResponseWriter: w}
+	a.lanes(&rw, r)
+	if rw.status != 200 {
+		return
+	}
+	var lanes []Lane
+	json.Unmarshal([]byte(rw.body.String()), &lanes)
+	jsonOut(w, 200, map[string]any{"columns": lanes})
+}
+
+type httptestResponse struct {
+	http.ResponseWriter
+	body   strings.Builder
+	status int
+}
+
+func (w *httptestResponse) Header() http.Header         { return w.ResponseWriter.Header() }
+func (w *httptestResponse) WriteHeader(n int)           { w.status = n }
+func (w *httptestResponse) Write(b []byte) (int, error) { return w.body.Write(b) }
 func (a *App) tools(w http.ResponseWriter, r *http.Request) {
-	jsonOut(w, 200, []map[string]any{{"id": "codex", "name": "Codex", "available": available("codex"), "reason": reason("codex")}, {"id": "claude", "name": "Claude Code", "available": available("claude"), "reason": reason("claude")}})
+	if r.Method == "POST" {
+		var x struct {
+			Name string
+			Argv []string
+		}
+		if decode(r, &x) != nil || strings.TrimSpace(x.Name) == "" || len(x.Argv) == 0 || strings.TrimSpace(x.Argv[0]) == "" {
+			fail(w, 400, "name and argv required")
+			return
+		}
+		b, _ := json.Marshal(x.Argv)
+		res, e := a.DB.Exec("INSERT INTO custom_cli_tools(user_id,name,argv_json) VALUES(?,?,?)", uid(r), strings.TrimSpace(x.Name), b)
+		if e != nil {
+			fail(w, 409, "tool unavailable")
+			return
+		}
+		id, _ := res.LastInsertId()
+		jsonOut(w, 201, map[string]any{"id": id})
+		return
+	}
+	out := []map[string]any{{"id": "codex", "name": "Codex", "available": available("codex"), "reason": reason("codex")}, {"id": "claude", "name": "Claude Code", "available": available("claude"), "reason": reason("claude")}}
+	rows, _ := a.DB.Query("SELECT id,name,argv_json FROM custom_cli_tools WHERE user_id=?", uid(r))
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name, s string
+		rows.Scan(&id, &name, &s)
+		var argv []string
+		json.Unmarshal([]byte(s), &argv)
+		out = append(out, map[string]any{"id": id, "name": name, "argv": argv, "available": available(argv[0]), "reason": reason(argv[0])})
+	}
+	jsonOut(w, 200, out)
 }
 func reason(s string) string {
 	if available(s) {
