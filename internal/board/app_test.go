@@ -123,6 +123,52 @@ func TestFreshAccountLanesReturnEmptyJobsArray(t *testing.T) {
 	}
 }
 
+func TestV2ColumnUsesMappedLane(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "new")
+	if err := os.Mkdir(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(filepath.Join(t.TempDir(), "db"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"column@example.com","password":"password1"}`)
+	w, _ := req(t, h, cookie, "POST", "/api/workspaces", `{"name":"New","projectDirectory":"`+workspace+`"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("workspace: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	workspaceID := int64(out["id"].(float64))
+	w, _ = req(t, h, cookie, "POST", "/api/boards", `{"name":"Board","workspaceId":`+itoa(workspaceID)+`}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("board: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &out)
+	boardID := int64(out["id"].(float64))
+	w, _ = req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"worktreeEnabled":false}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("column: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &out)
+	columnID := int64(out["id"].(float64))
+	var laneID int64
+	if err := a.DB.QueryRow(`SELECT lane_id FROM columns WHERE id=?`, columnID).Scan(&laneID); err != nil || laneID == columnID {
+		t.Fatalf("column/lane mapping: column=%d lane=%d err=%v", columnID, laneID, err)
+	}
+	w, _ = req(t, h, cookie, "POST", "/api/columns/"+itoa(columnID)+"/jobs", `{"task":"mapped","done_definition":"done"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("job: %d %s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE lane_id=?`, laneID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("job lane: count=%d err=%v", n, err)
+	}
+}
+
 func TestAuthIsolationAndStateValidation(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {

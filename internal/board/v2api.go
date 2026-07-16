@@ -339,7 +339,19 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	var p int
 	a.DB.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM columns WHERE board_id=?`, board).Scan(&p)
 	tx, _ := a.DB.Begin()
-	res, e := tx.Exec(`INSERT INTO columns(user_id,board_id,name,position,worktree_enabled,worktree_name,worktree_path) VALUES(?,?,?,?,?,?,?)`, uid(r), board, x.Name, p, x.WorktreeEnabled, wn, wp)
+	var lanePosition int
+	tx.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM lanes WHERE user_id=?`, uid(r)).Scan(&lanePosition)
+	laneRes, e := tx.Exec(`INSERT INTO lanes(user_id,name,position) VALUES(?,?,?)`, uid(r), x.Name, lanePosition)
+	if e != nil {
+		tx.Rollback()
+		if wp != nil {
+			gitOutput("worktree", "remove", "--", wp.(string))
+		}
+		fail(w, 409, "column unavailable")
+		return
+	}
+	laneID, _ := laneRes.LastInsertId()
+	res, e := tx.Exec(`INSERT INTO columns(user_id,board_id,lane_id,name,position,worktree_enabled,worktree_name,worktree_path) VALUES(?,?,?,?,?,?,?,?)`, uid(r), board, laneID, x.Name, p, x.WorktreeEnabled, wn, wp)
 	if e != nil {
 		tx.Rollback()
 		if wp != nil {
@@ -349,15 +361,6 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 		return
 	}
 	id, _ := res.LastInsertId()
-	_, e = tx.Exec(`INSERT INTO lanes(id,user_id,name,position) VALUES(?,?,?,?)`, id, uid(r), x.Name, id)
-	if e != nil {
-		tx.Rollback()
-		if wp != nil {
-			gitOutput("worktree", "remove", "--", wp.(string))
-		}
-		fail(w, 409, "column unavailable")
-		return
-	}
 	tx.Commit()
 	jsonOut(w, 201, map[string]any{"id": id, "name": x.Name, "worktreeEnabled": x.WorktreeEnabled, "worktreeName": wn})
 }
@@ -369,13 +372,14 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wt bool
+	var laneID int64
 	var path sql.NullString
-	if a.DB.QueryRow(`SELECT worktree_enabled,worktree_path FROM columns WHERE id=? AND user_id=?`, id, uid(r)).Scan(&wt, &path) != nil {
+	if a.DB.QueryRow(`SELECT lane_id,worktree_enabled,worktree_path FROM columns WHERE id=? AND user_id=?`, id, uid(r)).Scan(&laneID, &wt, &path) != nil {
 		fail(w, 404, "not found")
 		return
 	}
 	if strings.HasSuffix(rest, "/jobs") && r.Method == "POST" {
-		a.createJob(w, r, id)
+		a.createJob(w, r, laneID)
 		return
 	}
 	switch r.Method {
@@ -395,16 +399,16 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.DB.Exec(`UPDATE columns SET name=? WHERE id=?`, n, id)
-			a.DB.Exec(`UPDATE lanes SET name=? WHERE id=?`, n, id)
+			a.DB.Exec(`UPDATE lanes SET name=? WHERE id=?`, n, laneID)
 		}
 		if x.Paused != nil {
 			a.DB.Exec(`UPDATE columns SET paused=? WHERE id=?`, *x.Paused, id)
-			a.DB.Exec(`UPDATE lanes SET paused=? WHERE id=?`, *x.Paused, id)
+			a.DB.Exec(`UPDATE lanes SET paused=? WHERE id=?`, *x.Paused, laneID)
 		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
 	case "DELETE":
 		var n int
-		a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE lane_id=?`, id).Scan(&n)
+		a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE lane_id=?`, laneID).Scan(&n)
 		if n > 0 {
 			fail(w, 409, "column must be empty")
 			return
@@ -417,7 +421,7 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 		}
 		tx, _ := a.DB.Begin()
 		tx.Exec(`DELETE FROM columns WHERE id=? AND user_id=?`, id, uid(r))
-		tx.Exec(`DELETE FROM lanes WHERE id=? AND user_id=?`, id, uid(r))
+		tx.Exec(`DELETE FROM lanes WHERE id=? AND user_id=?`, laneID, uid(r))
 		tx.Commit()
 		w.WriteHeader(204)
 	default:

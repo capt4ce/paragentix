@@ -91,9 +91,12 @@ CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER 
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,name TEXT NOT NULL,directory TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(workspace_id,directory));
 CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,command TEXT NOT NULL DEFAULT '',argv_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name));
 CREATE TABLE IF NOT EXISTS boards(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL UNIQUE REFERENCES workspaces ON DELETE RESTRICT,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,board_id INTEGER NOT NULL REFERENCES boards ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,worktree_enabled INTEGER NOT NULL DEFAULT 0,worktree_name TEXT,worktree_path TEXT,CHECK((worktree_enabled=0 AND worktree_name IS NULL AND worktree_path IS NULL) OR (worktree_enabled=1 AND worktree_name IS NOT NULL AND worktree_path IS NOT NULL)),UNIQUE(board_id,position));`)
+CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,board_id INTEGER NOT NULL REFERENCES boards ON DELETE CASCADE,lane_id INTEGER UNIQUE REFERENCES lanes ON DELETE RESTRICT,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,worktree_enabled INTEGER NOT NULL DEFAULT 0,worktree_name TEXT,worktree_path TEXT,CHECK((worktree_enabled=0 AND worktree_name IS NULL AND worktree_path IS NULL) OR (worktree_enabled=1 AND worktree_name IS NOT NULL AND worktree_path IS NOT NULL)),UNIQUE(board_id,position));`)
 	if e == nil {
 		a.DB.Exec(`ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT ''`)
+		a.DB.Exec(`ALTER TABLE columns ADD COLUMN lane_id INTEGER REFERENCES lanes ON DELETE RESTRICT`)
+		a.DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS columns_lane_id ON columns(lane_id)`)
+		a.DB.Exec(`UPDATE columns SET lane_id=id WHERE lane_id IS NULL AND EXISTS(SELECT 1 FROM lanes WHERE lanes.id=columns.id)`)
 		_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspaces(user_id,name,root) SELECT user_id,'Default',workspace_root FROM user_settings`)
 	}
 	return e
@@ -750,7 +753,7 @@ func (a *App) start(id int64, task, done, cli, root string) {
 	run, _ := rr.LastInsertId()
 	tx.Commit()
 	var effective string
-	a.DB.QueryRow(`SELECT COALESCE(c.worktree_path,w.root) FROM jobs j LEFT JOIN columns c ON c.id=j.lane_id LEFT JOIN boards b ON b.id=c.board_id LEFT JOIN workspaces w ON w.id=b.workspace_id WHERE j.id=?`, id).Scan(&effective)
+	a.DB.QueryRow(`SELECT COALESCE(c.worktree_path,w.root) FROM jobs j LEFT JOIN columns c ON c.lane_id=j.lane_id LEFT JOIN boards b ON b.id=c.board_id LEFT JOIN workspaces w ON w.id=b.workspace_id WHERE j.id=?`, id).Scan(&effective)
 	if effective != "" {
 		root = effective
 	}
