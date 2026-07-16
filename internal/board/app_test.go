@@ -42,7 +42,7 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 	_, other := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"other@example.com","password":"password2"}`)
 
 	w, _ := req(t, h, owner, "GET", "/api/workspaces", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"root":"`+root+`"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"projectDirectory":"`+root+`"`) {
 		t.Fatalf("workspaces: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, owner, "POST", "/api/projects", `{"name":"App","directory":"project"}`)
@@ -65,8 +65,44 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 		t.Fatalf("tool: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, owner, "GET", "/api/boards", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"columns"`) {
+	if w.Code != 200 || w.Body.String() != "[]\n" {
 		t.Fatalf("board alias: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestV2CommandLexerAndAdditiveMigration(t *testing.T) {
+	got, err := parseCommand(`codex -m "gpt 5" --flag='literal;$(x)' escaped\ value`)
+	want := []string{"codex", "-m", "gpt 5", "--flag=literal;$(x)", "escaped value"}
+	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("parse=%q err=%v", got, err)
+	}
+	for _, bad := range []string{"", `codex "unfinished`, "codex \\", "codex\x00bad"} {
+		if _, err := parseCommand(bad); err == nil {
+			t.Fatalf("accepted malformed %q", bad)
+		}
+	}
+	db := filepath.Join(t.TempDir(), "existing.db")
+	a, err := Open(db, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`INSERT INTO users(email,password_hash) VALUES('legacy@example.com',x'00')`); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	a, err = Open(db, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	var n int
+	if err = a.DB.QueryRow(`SELECT count(*) FROM users WHERE email='legacy@example.com'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("legacy data lost: %d %v", n, err)
+	}
+	for _, table := range []string{"workspaces", "boards", "columns", "custom_cli_tools"} {
+		if err = a.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("missing %s: %v", table, err)
+		}
 	}
 }
 

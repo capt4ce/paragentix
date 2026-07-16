@@ -89,8 +89,11 @@ CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER 
 	}
 	_, e = a.DB.Exec(`CREATE TABLE IF NOT EXISTS workspaces(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,root TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,root));
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,name TEXT NOT NULL,directory TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(workspace_id,directory));
-CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,argv_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name));`)
+CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,command TEXT NOT NULL DEFAULT '',argv_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name));
+CREATE TABLE IF NOT EXISTS boards(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL UNIQUE REFERENCES workspaces ON DELETE RESTRICT,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,board_id INTEGER NOT NULL REFERENCES boards ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,worktree_enabled INTEGER NOT NULL DEFAULT 0,worktree_name TEXT,worktree_path TEXT,CHECK((worktree_enabled=0 AND worktree_name IS NULL AND worktree_path IS NULL) OR (worktree_enabled=1 AND worktree_name IS NOT NULL AND worktree_path IS NOT NULL)),UNIQUE(board_id,position));`)
 	if e == nil {
+		a.DB.Exec(`ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT ''`)
 		_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspaces(user_id,name,root) SELECT user_id,'Default',workspace_root FROM user_settings`)
 	}
 	return e
@@ -141,9 +144,12 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/settings", a.auth(http.HandlerFunc(a.settings)))
 	m.Handle("/api/cli-tools", a.auth(http.HandlerFunc(a.tools)))
 	m.Handle("/api/workspaces", a.auth(http.HandlerFunc(a.workspaces)))
+	m.Handle("/api/workspaces/", a.auth(http.HandlerFunc(a.workspacePath)))
 	m.Handle("/api/projects", a.auth(http.HandlerFunc(a.projects)))
 	m.Handle("/api/projects/", a.auth(http.HandlerFunc(a.projectPath)))
 	m.Handle("/api/boards", a.auth(http.HandlerFunc(a.boards)))
+	m.Handle("/api/boards/", a.auth(http.HandlerFunc(a.boardPath)))
+	m.Handle("/api/columns/", a.auth(http.HandlerFunc(a.columnPath)))
 	sub, _ := fs.Sub(web, "web")
 	files := http.FileServer(http.FS(sub))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -529,24 +535,28 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request, id int64) {
 func (a *App) settings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "PATCH" {
 		var x struct {
-			DefaultCLI string `json:"default_cli"`
+			DefaultCLI string            `json:"default_cli"`
+			Commands   map[string]string `json:"commands"`
 		}
-		if decode(r, &x) != nil || (x.DefaultCLI != "codex" && x.DefaultCLI != "claude") {
+		if decode(r, &x) != nil || (x.DefaultCLI != "" && x.DefaultCLI != "codex" && x.DefaultCLI != "claude") {
 			fail(w, 400, "invalid CLI")
 			return
 		}
-		if !available(x.DefaultCLI) {
-			fail(w, 409, "CLI is unavailable")
+		if e := storeCommands(a, uid(r), x.Commands); e != nil {
+			fail(w, 400, e.Error())
 			return
 		}
-		a.DB.Exec("UPDATE user_settings SET default_cli=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?", x.DefaultCLI, uid(r))
+		if x.DefaultCLI != "" {
+			a.DB.Exec("UPDATE user_settings SET default_cli=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?", x.DefaultCLI, uid(r))
+		}
 	}
 	var cli, root string
 	a.DB.QueryRow("SELECT default_cli,workspace_root FROM user_settings WHERE user_id=?", uid(r)).Scan(&cli, &root)
-	jsonOut(w, 200, map[string]string{"default_cli": cli, "workspace_root": root})
+	commands, _ := commandSettingsJSON(a, uid(r))
+	jsonOut(w, 200, map[string]any{"default_cli": cli, "workspace_root": root, "commands": commands})
 }
 func available(name string) bool { _, e := exec.LookPath(name); return e == nil }
-func (a *App) workspaces(w http.ResponseWriter, r *http.Request) {
+func (a *App) legacyWorkspaces(w http.ResponseWriter, r *http.Request) {
 	rows, _ := a.DB.Query("SELECT id,name,root FROM workspaces WHERE user_id=? ORDER BY id", uid(r))
 	defer rows.Close()
 	out := []map[string]any{}
@@ -612,7 +622,7 @@ func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory})
 }
-func (a *App) boards(w http.ResponseWriter, r *http.Request) {
+func (a *App) legacyBoards(w http.ResponseWriter, r *http.Request) {
 	rw := httptestResponse{ResponseWriter: w}
 	a.lanes(&rw, r)
 	if rw.status != 200 {
@@ -712,7 +722,13 @@ func (a *App) schedule() {
 	}
 }
 func (a *App) start(id int64, task, done, cli, root string) {
-	if !available("tmux") || !available(cli) {
+	var command string
+	a.DB.QueryRow(`SELECT command FROM custom_cli_tools WHERE user_id=(SELECT user_id FROM jobs WHERE id=?) AND name=?`, id, cli).Scan(&command)
+	if command == "" {
+		command = cli
+	}
+	argv, e := parseCommand(command)
+	if e != nil || !available("tmux") || !available(argv[0]) {
 		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected CLI or tmux is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 		return
 	}
@@ -733,7 +749,13 @@ func (a *App) start(id int64, task, done, cli, root string) {
 	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, session)
 	run, _ := rr.LastInsertId()
 	tx.Commit()
-	args := []string{"new-session", "-d", "-s", session, "-c", filepath.Clean(root), cli}
+	var effective string
+	a.DB.QueryRow(`SELECT COALESCE(c.worktree_path,w.root) FROM jobs j LEFT JOIN columns c ON c.id=j.lane_id LEFT JOIN boards b ON b.id=c.board_id LEFT JOIN workspaces w ON w.id=b.workspace_id WHERE j.id=?`, id).Scan(&effective)
+	if effective != "" {
+		root = effective
+	}
+	args := []string{"new-session", "-d", "-s", session, "-c", filepath.Clean(root), "--"}
+	args = append(args, argv...)
 	if e := exec.Command("tmux", args...).Run(); e != nil {
 		a.block(id, run, e.Error())
 		return
