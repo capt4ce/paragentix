@@ -235,7 +235,7 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []Lane{}
 	for rows.Next() {
-		var l Lane
+		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
 		jr, _ := a.DB.Query("SELECT id,lane_id,task,done_definition,warning,state,cli_tool,position,attempt_count,created_at,updated_at FROM jobs WHERE lane_id=? ORDER BY CASE state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,position", l.ID)
 		for jr.Next() {

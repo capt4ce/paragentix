@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 
-	"github.com/capt4ce/custom-agent/internal/config"
+	"github.com/capt4ce/paragentix/internal/config"
 )
 
 type Server struct{ Config config.MCPServerConfig }

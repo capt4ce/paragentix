@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/capt4ce/custom-agent/internal/board"
+	"github.com/capt4ce/paragentix/internal/board"
 	"log"
 	"net/http"
 	"os"

@@ -1,4 +1,4 @@
-module github.com/capt4ce/custom-agent
+module github.com/capt4ce/paragentix
 
 go 1.25.0
 

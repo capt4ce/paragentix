@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/capt4ce/custom-agent/internal/config"
-	"github.com/capt4ce/custom-agent/internal/llm"
-	"github.com/capt4ce/custom-agent/internal/skills"
-	"github.com/capt4ce/custom-agent/internal/storage"
-	"github.com/capt4ce/custom-agent/internal/tools"
+	"github.com/capt4ce/paragentix/internal/config"
+	"github.com/capt4ce/paragentix/internal/llm"
+	"github.com/capt4ce/paragentix/internal/skills"
+	"github.com/capt4ce/paragentix/internal/storage"
+	"github.com/capt4ce/paragentix/internal/tools"
 )
 
 type Request struct{ Profile, SessionID, Input string }

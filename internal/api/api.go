@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/capt4ce/custom-agent/internal/agent"
+	"github.com/capt4ce/paragentix/internal/agent"
 )
 
 func Serve(ctx context.Context, addr string, a *agent.Agent) error {

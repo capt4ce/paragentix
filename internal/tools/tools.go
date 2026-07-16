@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/capt4ce/custom-agent/internal/config"
-	"github.com/capt4ce/custom-agent/internal/llm"
-	"github.com/capt4ce/custom-agent/internal/mcp"
+	"github.com/capt4ce/paragentix/internal/config"
+	"github.com/capt4ce/paragentix/internal/llm"
+	"github.com/capt4ce/paragentix/internal/mcp"
 )
 
 type ApprovalRequest struct {

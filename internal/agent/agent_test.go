@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/capt4ce/custom-agent/internal/config"
-	"github.com/capt4ce/custom-agent/internal/llm"
-	"github.com/capt4ce/custom-agent/internal/storage"
+	"github.com/capt4ce/paragentix/internal/config"
+	"github.com/capt4ce/paragentix/internal/llm"
+	"github.com/capt4ce/paragentix/internal/storage"
 )
 
 type fakeProvider struct{ seen []llm.Message }

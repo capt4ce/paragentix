@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/capt4ce/custom-agent/internal/agent"
-	"github.com/capt4ce/custom-agent/internal/config"
+	"github.com/capt4ce/paragentix/internal/agent"
+	"github.com/capt4ce/paragentix/internal/config"
 )
 
 func Run(ctx context.Context, cfg config.Config, a *agent.Agent) error {

@@ -24,6 +24,23 @@ func req(t *testing.T, h http.Handler, c *http.Cookie, method, path, body string
 	}
 	return w, out
 }
+func TestFreshAccountLanesReturnEmptyJobsArray(t *testing.T) {
+	a, e := Open(t.TempDir()+"/db", t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	h := a.Handler()
+	w, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"fresh@example.com","password":"password1"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, cookie, "GET", "/api/lanes", "")
+	if !strings.Contains(w.Body.String(), `"jobs":[]`) {
+		t.Fatalf("empty jobs must be an array: %s", w.Body.String())
+	}
+}
+
 func TestAuthIsolationAndStateValidation(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {

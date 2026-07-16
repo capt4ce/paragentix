@@ -1,7 +1,9 @@
 .env
 sqlite.db*
 bin/
+/paragentix
 /custom-agent
+.hermes/
 frontend/node_modules/
 frontend/dist/
 data/

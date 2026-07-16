@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/capt4ce/custom-agent/internal/agent"
-	"github.com/capt4ce/custom-agent/internal/config"
-	"github.com/capt4ce/custom-agent/internal/storage"
+	"github.com/capt4ce/paragentix/internal/agent"
+	"github.com/capt4ce/paragentix/internal/config"
+	"github.com/capt4ce/paragentix/internal/storage"
 )
 
 func TestServeStartsResponseEndpoint(t *testing.T) {

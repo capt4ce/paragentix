@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/capt4ce/custom-agent/internal/config"
+	"github.com/capt4ce/paragentix/internal/config"
 )
 
 func TestServerCallHTTPPostsJSON(t *testing.T) {

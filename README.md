@@ -1,4 +1,4 @@
-# CLI Agent Job Board
+# Paragentix
 
 Self-hosted Go/SQLite board that schedules Codex or Claude Code jobs through tmux.
 
@@ -6,7 +6,7 @@ Self-hosted Go/SQLite board that schedules Codex or Claude Code jobs through tmu
 
 ```sh
 cd frontend && npm install && npm run build
-cd .. && go run ./cmd/custom-agent
+cd .. && go run ./cmd/paragentix
 ```
 
 Open http://localhost:8080. Data is stored in root `sqlite.db`. Optional `.env` values may be exported by your process manager; `ADDR` controls the listen address. Install/authenticate `tmux`, `codex`, and/or `claude` for execution. Unavailable tools remain visible in Settings.
@@ -14,6 +14,6 @@ Open http://localhost:8080. Data is stored in root `sqlite.db`. Optional `.env` 
 ## Verify
 
 ```sh
-go test ./internal/board ./cmd/custom-agent
+go test ./internal/board ./cmd/paragentix
 cd frontend && npm test && npm run build
 ```
