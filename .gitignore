@@ -1,3 +1,7 @@
+.env
+sqlite.db*
 bin/
+/custom-agent
+frontend/node_modules/
+frontend/dist/
 data/
-config.yaml
