@@ -270,7 +270,6 @@ func gitOutput(args ...string) error {
 func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	if r.Method == "GET" {
 		rows, _ := a.DB.Query(`SELECT id,name,position,paused,worktree_enabled,worktree_name,worktree_path FROM columns WHERE board_id=? ORDER BY position`, board)
-		defer rows.Close()
 		out := []map[string]any{}
 		for rows.Next() {
 			var id int64
@@ -279,7 +278,19 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 			var paused, en bool
 			var wn, wp sql.NullString
 			rows.Scan(&id, &n, &p, &paused, &en, &wn, &wp)
-			out = append(out, map[string]any{"id": id, "name": n, "position": p, "paused": paused, "worktreeEnabled": en, "worktreeName": wn.String, "effectiveDirectory": wp.String})
+			out = append(out, map[string]any{"id": id, "name": n, "position": p, "paused": paused, "worktreeEnabled": en, "worktreeName": wn.String, "effectiveDirectory": wp.String, "jobs": []Job{}})
+		}
+		rows.Close()
+		for _, c := range out {
+			jr, _ := a.DB.Query(`SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.cli_tool,j.position,j.attempt_count,j.created_at,j.updated_at FROM jobs j JOIN columns c ON c.lane_id=j.lane_id WHERE c.id=? AND c.board_id=? ORDER BY j.position`, c["id"], board)
+			jobs := []Job{}
+			for jr.Next() {
+				var j Job
+				jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.CLI, &j.Position, &j.Attempts, &j.Created, &j.Updated)
+				jobs = append(jobs, j)
+			}
+			jr.Close()
+			c["jobs"] = jobs
 		}
 		jsonOut(w, 200, out)
 		return

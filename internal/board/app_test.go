@@ -167,6 +167,13 @@ func TestV2ColumnUsesMappedLane(t *testing.T) {
 	if err := a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE lane_id=?`, laneID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("job lane: count=%d err=%v", n, err)
 	}
+	w, _ = req(t, h, cookie, "GET", "/api/boards/"+itoa(boardID)+"/columns", "")
+	var columns []struct {
+		Jobs []Job `json:"jobs"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &columns) != nil || len(columns) != 1 || len(columns[0].Jobs) != 1 || columns[0].Jobs[0].Task != "mapped" {
+		t.Fatalf("column jobs: %d %s", w.Code, w.Body.String())
+	}
 }
 
 func TestAuthIsolationAndStateValidation(t *testing.T) {
