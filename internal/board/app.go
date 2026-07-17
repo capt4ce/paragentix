@@ -776,6 +776,13 @@ func (a *App) schedule() {
 		a.start(x.id, x.task, x.done, x.cli, x.root)
 	}
 }
+func jobCommand(argv []string, cli, prompt string) ([]string, bool) {
+	if cli == "codex" {
+		return append(argv, "exec", prompt), false
+	}
+	return argv, true
+}
+
 func (a *App) start(id int64, task, done, cli, root string) {
 	var command string
 	a.DB.QueryRow(`SELECT command FROM custom_cli_tools WHERE user_id=(SELECT user_id FROM jobs WHERE id=?) AND name=?`, id, cli).Scan(&command)
@@ -809,15 +816,18 @@ func (a *App) start(id int64, task, done, cli, root string) {
 	if effective != "" {
 		root = effective
 	}
+	prompt := task + "\n\nDone definition:\n" + done
+	argv, sendKeys := jobCommand(argv, cli, prompt)
 	args := []string{"new-session", "-d", "-s", session, "-c", filepath.Clean(root), "--"}
 	args = append(args, argv...)
 	if e := exec.Command("tmux", args...).Run(); e != nil {
 		a.block(id, run, e.Error())
 		return
 	}
-	prompt := task + "\n\nDone definition:\n" + done
-	exec.Command("tmux", "send-keys", "-t", session, "-l", prompt).Run()
-	exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
+	if sendKeys {
+		exec.Command("tmux", "send-keys", "-t", session, "-l", prompt).Run()
+		exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
+	}
 	go a.monitor(id, run, session)
 }
 func (a *App) monitor(job, run int64, session string) {

@@ -71,6 +71,15 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 	}
 }
 
+func TestCodexJobPromptIsPassedAsExecArgument(t *testing.T) {
+	prompt := "Implement responsive design\n\nDone definition:\nWorks on mobile"
+	got, sendKeys := jobCommand([]string{"codex", "-m", "gpt-5.6", "--yolo"}, "codex", prompt)
+	want := []string{"codex", "-m", "gpt-5.6", "--yolo", "exec", prompt}
+	if strings.Join(got, "|") != strings.Join(want, "|") || sendKeys {
+		t.Fatalf("command=%q sendKeys=%v", got, sendKeys)
+	}
+}
+
 func TestV2CommandLexerAndAdditiveMigration(t *testing.T) {
 	got, err := parseCommand(`codex -m "gpt 5" --flag='literal;$(x)' escaped\ value`)
 	want := []string{"codex", "-m", "gpt 5", "--flag=literal;$(x)", "escaped value"}
