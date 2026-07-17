@@ -229,6 +229,36 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatalf("retry todo=%d", w.Code)
 	}
+	w, _ = req(t, h, c1, "DELETE", "/api/jobs/"+itoa(id), "")
+	if w.Code != 409 {
+		t.Fatalf("archive todo=%d", w.Code)
+	}
+	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	w, _ = req(t, h, c2, "DELETE", "/api/jobs/"+itoa(id), "")
+	if w.Code != 404 {
+		t.Fatalf("cross-user archive=%d", w.Code)
+	}
+	res, e := a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'archived-test','done')", id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	runID, _ := res.LastInsertId()
+	if _, e = a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'output','done')", runID); e != nil {
+		t.Fatal(e)
+	}
+	w, _ = req(t, h, c1, "DELETE", "/api/jobs/"+itoa(id), "")
+	if w.Code != 204 {
+		t.Fatalf("archive done=%d %s", w.Code, w.Body.String())
+	}
+	var count int
+	a.DB.QueryRow("SELECT COUNT(*) FROM jobs WHERE id=?", id).Scan(&count)
+	if count != 0 {
+		t.Fatal("archived job still exists")
+	}
+	a.DB.QueryRow("SELECT COUNT(*) FROM job_runs WHERE id=?", runID).Scan(&count)
+	if count != 0 {
+		t.Fatal("archived job run still exists")
+	}
 }
 func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())

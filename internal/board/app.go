@@ -369,6 +369,35 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 			a.editJob(w, r, id, state)
 			return
 		}
+		if r.Method == "DELETE" {
+			if state != "done" {
+				fail(w, 409, "only done jobs can archive")
+				return
+			}
+			tx, e := a.DB.Begin()
+			if e == nil {
+				_, e = tx.Exec("DELETE FROM job_events WHERE job_run_id IN (SELECT id FROM job_runs WHERE job_id=?)", id)
+			}
+			if e == nil {
+				_, e = tx.Exec("DELETE FROM job_runs WHERE job_id=?", id)
+			}
+			if e == nil {
+				_, e = tx.Exec("DELETE FROM jobs WHERE id=? AND user_id=?", id, uid(r))
+			}
+			if e == nil {
+				e = tx.Commit()
+			}
+			if e != nil {
+				if tx != nil {
+					tx.Rollback()
+				}
+				fail(w, 500, "could not archive job")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			a.signal()
+			return
+		}
 	} else {
 		switch parts[1] {
 		case "reorder":
