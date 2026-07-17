@@ -380,12 +380,58 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 		case "stream":
 			a.stream(w, r, id)
 			return
+		case "comment":
+			a.comment(w, r, id, state)
+			return
 		case "retry", "cancel", "approve", "input":
 			a.action(w, r, id, state, parts[1])
 			return
 		}
 	}
 	fail(w, 405, "method not allowed")
+}
+func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state string) {
+	if r.Method != "POST" {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	if state != "in_progress" && state != "blocked" {
+		fail(w, 409, "job session is not active")
+		return
+	}
+	var x struct{ Comment string }
+	if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
+		return
+	}
+	x.Comment = strings.TrimSpace(x.Comment)
+	if x.Comment == "" || len(x.Comment) > 4000 {
+		fail(w, 400, "comment must be 1-4000 characters")
+		return
+	}
+	var run int64
+	var session string
+	if e := a.DB.QueryRow("SELECT id,tmux_session FROM job_runs WHERE job_id=? AND status='running' ORDER BY id DESC LIMIT 1", id).Scan(&run, &session); e != nil {
+		fail(w, 409, "active session not found")
+		return
+	}
+	if e := exec.Command("tmux", "has-session", "-t", session).Run(); e != nil {
+		fail(w, 409, "active session not found")
+		return
+	}
+	if e := exec.Command("tmux", "send-keys", "-t", session, "-l", x.Comment).Run(); e != nil {
+		fail(w, 500, "could not send comment")
+		return
+	}
+	if e := exec.Command("tmux", "send-keys", "-t", session, "Enter").Run(); e != nil {
+		fail(w, 500, "could not send comment")
+		return
+	}
+	var seq int
+	a.DB.QueryRow("SELECT COALESCE(MAX(sequence),0)+1 FROM job_events WHERE job_run_id=?", run).Scan(&seq)
+	a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,?,?,?)", run, seq, "comment", x.Comment)
+	jsonOut(w, 200, map[string]bool{"ok": true})
+	a.signal()
 }
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job

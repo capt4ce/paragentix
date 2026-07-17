@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -207,6 +208,51 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 		t.Fatalf("done edit=%d", w.Code)
 	}
 }
+func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
+	a, e := Open(t.TempDir()+"/db", t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, c := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"comment@example.com","password":"password1"}`)
+	w, _ := req(t, h, c, "GET", "/api/lanes", "")
+	var lanes []Lane
+	json.Unmarshal(w.Body.Bytes(), &lanes)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lanes[0].ID)
+	w, _ = req(t, h, c, "POST", "/api/lanes/"+itoa(lanes[0].ID)+"/jobs", `{"task":"hello","done_definition":"works"}`)
+	var made map[string]any
+	json.Unmarshal(w.Body.Bytes(), &made)
+	id := int64(made["id"].(float64))
+	a.DB.Exec("UPDATE jobs SET state='in_progress' WHERE id=?", id)
+	r, _ := a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,?,'running')", id, "agent-job-"+itoa(id))
+	runID, _ := r.LastInsertId()
+	session := "agent-job-" + itoa(id)
+	if e := exec.Command("tmux", "new-session", "-d", "-s", session).Run(); e != nil {
+		t.Skip("tmux unavailable:", e)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", session).Run()
+
+	w, _ = req(t, h, c, "POST", "/api/jobs/"+itoa(id)+"/comment", `{"comment":"keep the API shape"}`)
+	if w.Code != 200 {
+		t.Fatalf("comment: %d %s", w.Code, w.Body.String())
+	}
+	var kind, content string
+	if e := a.DB.QueryRow("SELECT kind,content FROM job_events WHERE job_run_id=?", runID).Scan(&kind, &content); e != nil || kind != "comment" || content != "keep the API shape" {
+		t.Fatalf("event: kind=%q content=%q err=%v", kind, content, e)
+	}
+
+	w, _ = req(t, h, c, "POST", "/api/jobs/"+itoa(id)+"/comment", `{"comment":"   "}`)
+	if w.Code != 400 {
+		t.Fatalf("blank comment=%d", w.Code)
+	}
+	a.DB.Exec("UPDATE jobs SET state='done' WHERE id=?", id)
+	w, _ = req(t, h, c, "POST", "/api/jobs/"+itoa(id)+"/comment", `{"comment":"late"}`)
+	if w.Code != 409 {
+		t.Fatalf("done comment=%d", w.Code)
+	}
+}
+
 func itoa(n int64) string {
 	const d = "0123456789"
 	if n == 0 {
