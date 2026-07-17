@@ -517,6 +517,12 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		}
 		a.DB.Exec("UPDATE jobs SET state='todo',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 		exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
+	} else if act == "retry" {
+		if state != "done" {
+			fail(w, 409, "only done jobs can retry")
+			return
+		}
+		a.DB.Exec("UPDATE jobs SET state='todo',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	} else {
 		if state != "blocked" {
 			fail(w, 409, "job is not blocked")

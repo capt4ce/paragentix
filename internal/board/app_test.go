@@ -202,10 +202,23 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 	if w.Code != 404 {
 		t.Fatalf("cross-user access=%d", w.Code)
 	}
-	a.DB.Exec("UPDATE jobs SET state='done' WHERE id=?", id)
+	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	w, _ = req(t, h, c1, "PATCH", "/api/jobs/"+itoa(id), `{"done_definition":"changed"}`)
 	if w.Code != 409 {
 		t.Fatalf("done edit=%d", w.Code)
+	}
+	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
+	if w.Code != 200 {
+		t.Fatalf("retry done=%d %s", w.Code, w.Body.String())
+	}
+	var state string
+	var finished any
+	if e := a.DB.QueryRow("SELECT state,finished_at FROM jobs WHERE id=?", id).Scan(&state, &finished); e != nil || state != "todo" || finished != nil {
+		t.Fatalf("retried job state=%q finished=%v err=%v", state, finished, e)
+	}
+	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
+	if w.Code != 409 {
+		t.Fatalf("retry todo=%d", w.Code)
 	}
 }
 func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
