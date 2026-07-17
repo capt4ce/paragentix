@@ -253,6 +253,34 @@ func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
 	}
 }
 
+func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
+	a, e := Open(t.TempDir()+"/db", t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	_, c := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"reconcile@example.com","password":"password1"}`)
+	w, _ := req(t, a.Handler(), c, "GET", "/api/lanes", "")
+	var lanes []Lane
+	json.Unmarshal(w.Body.Bytes(), &lanes)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lanes[0].ID)
+	w, _ = req(t, a.Handler(), c, "POST", "/api/lanes/"+itoa(lanes[0].ID)+"/jobs", `{"task":"hello"}`)
+	var made map[string]any
+	json.Unmarshal(w.Body.Bytes(), &made)
+	id := int64(made["id"].(float64))
+	a.DB.Exec("UPDATE jobs SET state='blocked' WHERE id=?", id)
+	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,?,'running')", id, "missing-session")
+
+	a.reconcile()
+
+	var runStatus, warning string
+	a.DB.QueryRow("SELECT status FROM job_runs WHERE job_id=?", id).Scan(&runStatus)
+	a.DB.QueryRow("SELECT warning FROM jobs WHERE id=?", id).Scan(&warning)
+	if runStatus != "blocked" || warning != "Execution session missing after server restart" {
+		t.Fatalf("status=%q warning=%q", runStatus, warning)
+	}
+}
+
 func itoa(n int64) string {
 	const d = "0123456789"
 	if n == 0 {

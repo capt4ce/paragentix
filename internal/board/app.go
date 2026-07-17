@@ -845,13 +845,14 @@ func (a *App) block(job, run int64, msg string) {
 	a.DB.Exec("UPDATE jobs SET state='blocked',warning=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", msg, job)
 }
 func (a *App) reconcile() {
-	rows, _ := a.DB.Query("SELECT id FROM jobs WHERE state='in_progress'")
+	rows, _ := a.DB.Query("SELECT id,job_id,tmux_session FROM job_runs WHERE status='running'")
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
-		rows.Scan(&id)
-		if exec.Command("tmux", "has-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run() != nil {
-			a.DB.Exec("UPDATE jobs SET state='blocked',warning='Execution session missing after server restart' WHERE id=?", id)
+		var run, job int64
+		var session string
+		rows.Scan(&run, &job, &session)
+		if exec.Command("tmux", "has-session", "-t", session).Run() != nil {
+			a.block(job, run, "Execution session missing after server restart")
 		}
 	}
 }
