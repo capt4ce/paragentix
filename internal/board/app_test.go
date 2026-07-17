@@ -71,6 +71,24 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 	}
 }
 
+func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"hermes@example.com","password":"password1"}`)
+	w, _ := req(t, h, cookie, "PATCH", "/api/settings", `{"default_cli":"hermes","hermes_url":"","hermes_api_key":""}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing config accepted: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, cookie, "PATCH", "/api/settings", `{"default_cli":"hermes","hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"default_cli":"hermes"`) || strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestCodexJobPromptIsPassedAsExecArgument(t *testing.T) {
 	prompt := "Implement responsive design\n\nDone definition:\nWorks on mobile"
 	got, sendKeys := jobCommand([]string{"codex", "-m", "gpt-5.6", "--yolo"}, "codex", prompt)

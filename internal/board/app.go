@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,9 +81,9 @@ func (a *App) migrate() error {
 	_, e := a.DB.Exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash BLOB NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS auth_sessions(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,token_hash TEXT UNIQUE NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS user_settings(user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,default_cli TEXT NOT NULL DEFAULT 'codex' CHECK(default_cli IN('codex','claude')),workspace_root TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS user_settings(user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,default_cli TEXT NOT NULL DEFAULT 'codex',workspace_root TEXT NOT NULL,hermes_url TEXT NOT NULL DEFAULT '',hermes_api_key TEXT NOT NULL DEFAULT '',hermes_model TEXT NOT NULL DEFAULT 'hermes-agent',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS lanes(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,position));
-CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),cli_tool TEXT NOT NULL CHECK(cli_tool IN('codex','claude')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,UNIQUE(lane_id,position));
+CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),cli_tool TEXT NOT NULL,position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,UNIQUE(lane_id,position));
 CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,attempt INTEGER NOT NULL,tmux_session TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,ended_at TEXT,result_summary TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));`)
 	if e != nil {
@@ -93,6 +95,13 @@ CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEG
 CREATE TABLE IF NOT EXISTS boards(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL UNIQUE REFERENCES workspaces ON DELETE RESTRICT,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,board_id INTEGER NOT NULL REFERENCES boards ON DELETE CASCADE,lane_id INTEGER UNIQUE REFERENCES lanes ON DELETE RESTRICT,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,worktree_enabled INTEGER NOT NULL DEFAULT 0,worktree_name TEXT,worktree_path TEXT,CHECK((worktree_enabled=0 AND worktree_name IS NULL AND worktree_path IS NULL) OR (worktree_enabled=1 AND worktree_name IS NOT NULL AND worktree_path IS NOT NULL)),UNIQUE(board_id,position));`)
 	if e == nil {
+		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_url TEXT NOT NULL DEFAULT ''`)
+		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_api_key TEXT NOT NULL DEFAULT ''`)
+		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_model TEXT NOT NULL DEFAULT 'hermes-agent'`)
+		a.DB.Exec(`PRAGMA writable_schema=ON`)
+		a.DB.Exec(`UPDATE sqlite_master SET sql=replace(sql,"CHECK(default_cli IN('codex','claude'))",'') WHERE name='user_settings'`)
+		a.DB.Exec(`UPDATE sqlite_master SET sql=replace(sql,"CHECK(cli_tool IN('codex','claude'))",'') WHERE name='jobs'`)
+		a.DB.Exec(`PRAGMA writable_schema=OFF`)
 		a.DB.Exec(`ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE columns ADD COLUMN lane_id INTEGER REFERENCES lanes ON DELETE RESTRICT`)
 		a.DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS columns_lane_id ON columns(lane_id)`)
@@ -619,25 +628,37 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request, id int64) {
 func (a *App) settings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "PATCH" {
 		var x struct {
-			DefaultCLI string            `json:"default_cli"`
-			Commands   map[string]string `json:"commands"`
+			DefaultCLI   string            `json:"default_cli"`
+			Commands     map[string]string `json:"commands"`
+			HermesURL    string            `json:"hermes_url"`
+			HermesAPIKey string            `json:"hermes_api_key"`
+			HermesModel  string            `json:"hermes_model"`
 		}
-		if decode(r, &x) != nil || (x.DefaultCLI != "" && x.DefaultCLI != "codex" && x.DefaultCLI != "claude") {
+		if decode(r, &x) != nil || (x.DefaultCLI != "" && x.DefaultCLI != "codex" && x.DefaultCLI != "claude" && x.DefaultCLI != "hermes") {
 			fail(w, 400, "invalid CLI")
 			return
+		}
+		if x.DefaultCLI == "hermes" {
+			u, e := url.ParseRequestURI(x.HermesURL)
+			var savedKey string
+			a.DB.QueryRow("SELECT hermes_api_key FROM user_settings WHERE user_id=?", uid(r)).Scan(&savedKey)
+			if e != nil || (u.Scheme != "http" && u.Scheme != "https") || (x.HermesAPIKey == "" && savedKey == "") {
+				fail(w, 400, "Hermes URL and API key required")
+				return
+			}
 		}
 		if e := storeCommands(a, uid(r), x.Commands); e != nil {
 			fail(w, 400, e.Error())
 			return
 		}
 		if x.DefaultCLI != "" {
-			a.DB.Exec("UPDATE user_settings SET default_cli=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?", x.DefaultCLI, uid(r))
+			a.DB.Exec("UPDATE user_settings SET default_cli=?,hermes_url=?,hermes_api_key=CASE WHEN ?='' THEN hermes_api_key ELSE ? END,hermes_model=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?", x.DefaultCLI, x.HermesURL, x.HermesAPIKey, x.HermesAPIKey, x.HermesModel, uid(r))
 		}
 	}
-	var cli, root string
-	a.DB.QueryRow("SELECT default_cli,workspace_root FROM user_settings WHERE user_id=?", uid(r)).Scan(&cli, &root)
+	var cli, root, hermesURL, hermesModel, key string
+	a.DB.QueryRow("SELECT default_cli,workspace_root,hermes_url,hermes_model,hermes_api_key FROM user_settings WHERE user_id=?", uid(r)).Scan(&cli, &root, &hermesURL, &hermesModel, &key)
 	commands, _ := commandSettingsJSON(a, uid(r))
-	jsonOut(w, 200, map[string]any{"default_cli": cli, "workspace_root": root, "commands": commands})
+	jsonOut(w, 200, map[string]any{"default_cli": cli, "workspace_root": root, "commands": commands, "hermes_url": hermesURL, "hermes_model": hermesModel, "hermes_api_key": "", "hermes_api_key_set": key != ""})
 }
 func available(name string) bool { _, e := exec.LookPath(name); return e == nil }
 func (a *App) legacyWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -812,7 +833,48 @@ func jobCommand(argv []string, cli, prompt string) ([]string, bool) {
 	return argv, true
 }
 
+func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (string, error) {
+	var base, key, model string
+	if e := a.DB.QueryRow("SELECT hermes_url,hermes_api_key,hermes_model FROM user_settings WHERE user_id=?", userID).Scan(&base, &key, &model); e != nil {
+		return "", e
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}})
+	req, e := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/chat/completions", strings.NewReader(string(body)))
+	if e != nil {
+		return "", e
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	res, e := http.DefaultClient.Do(req)
+	if e != nil {
+		return "", e
+	}
+	defer res.Body.Close()
+	b, e := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if e != nil {
+		return "", e
+	}
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("Hermes API error %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if e = json.Unmarshal(b, &out); e != nil || len(out.Choices) == 0 {
+		return "", fmt.Errorf("invalid Hermes API response")
+	}
+	return out.Choices[0].Message.Content, nil
+}
+
 func (a *App) start(id int64, task, done, cli, root string) {
+	if cli == "hermes" {
+		a.startHermes(id, task+"\n\nDone definition:\n"+done)
+		return
+	}
 	var command string
 	a.DB.QueryRow(`SELECT command FROM custom_cli_tools WHERE user_id=(SELECT user_id FROM jobs WHERE id=?) AND name=?`, id, cli).Scan(&command)
 	if command == "" {
@@ -859,6 +921,38 @@ func (a *App) start(id int64, task, done, cli, root string) {
 	}
 	go a.monitor(id, run, session)
 }
+func (a *App) startHermes(id int64, prompt string) {
+	tx, _ := a.DB.Begin()
+	res, e := tx.Exec("UPDATE jobs SET state='in_progress',attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", id)
+	if e != nil {
+		tx.Rollback()
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		tx.Rollback()
+		return
+	}
+	var attempt int
+	tx.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", id).Scan(&attempt)
+	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, "hermes-api")
+	run, _ := rr.LastInsertId()
+	tx.Commit()
+	go func() {
+		var user int64
+		a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", id).Scan(&user)
+		out, e := a.runHermes(context.Background(), user, prompt)
+		if e != nil {
+			a.block(id, run, e.Error())
+			return
+		}
+		a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'output',?)", run, out)
+		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", out, run)
+		a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.signal()
+	}()
+}
+
 func (a *App) monitor(job, run int64, session string) {
 	seq := 0
 	last := ""
