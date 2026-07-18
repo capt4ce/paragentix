@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { fireEvent, render } from "@testing-library/react";
 import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation } from "./src";
 describe("workspace URL restoration", () => {
   it("restores list and valid detail tabs", () => {
@@ -29,6 +30,13 @@ describe("notification center", () => {
     const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
     expect(html).toContain('aria-label="Notifications"');
     expect(html).toContain('class="notification-bell"');
+  });
+  it("closes when clicking outside", () => {
+    const { getByLabelText } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    const details = getByLabelText("Notifications").closest("details")!;
+    details.open = true;
+    fireEvent.pointerDown(document.body);
+    expect(details.open).toBe(false);
   });
 });
 describe("api", () => {
