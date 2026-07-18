@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, parseLocation } from "./src";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation } from "./src";
 describe("workspace URL restoration", () => {
   it("restores list and valid detail tabs", () => {
     expect(parseLocation("?workspaces=1")).toEqual({ view: "workspaces" });
@@ -20,6 +22,13 @@ describe("account menu", () => {
   it("closes native details", () => {
     const d = document.createElement("details"); d.open = true;
     closeDetails({ current: d }); expect(d.open).toBe(false);
+  });
+});
+describe("notification center", () => {
+  it("always renders an accessible bell beside the account menu", () => {
+    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    expect(html).toContain('aria-label="Notifications"');
+    expect(html).toContain('class="notification-bell"');
   });
 });
 describe("api", () => {
