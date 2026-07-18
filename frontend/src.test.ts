@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { api, boardLocation, canComment, closeDetails, columnPatch, jobActionsVisible, jobColumn, parseLocation } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, parseLocation } from "./src";
 describe("workspace URL restoration", () => {
   it("restores list and valid detail tabs", () => {
     expect(parseLocation("?workspaces=1")).toEqual({ view: "workspaces" });
@@ -76,4 +76,17 @@ describe("job actions", () => {
     (state) =>
       expect(jobActionsVisible(state)).toEqual({ retry: true, archive: true }),
   );
+});
+describe("chat conversations", () => {
+  it("places user input on the right and provider output on the left", () => {
+    expect(eventSide("comment")).toBe("sent");
+    expect(eventSide("input")).toBe("sent");
+    expect(eventSide("output")).toBe("received");
+    expect(eventSide("error")).toBe("received");
+  });
+});
+describe("notification paging", () => {
+  it("appends only unseen notifications", () => {
+    expect(mergeNotifications([{id: 2}], [{id: 2}, {id: 1}])).toEqual([{id: 2}, {id: 1}]);
+  });
 });

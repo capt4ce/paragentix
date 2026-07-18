@@ -96,6 +96,8 @@ export const jobActionsVisible = (_state: string) => ({
 export async function archiveColumn(id: number) {
   await api("/columns/" + id, { method: "DELETE" });
 }
+export const eventSide = (kind: string) => kind === "comment" || kind === "input" ? "sent" : "received";
+export const mergeNotifications = (current: any[], incoming: any[]) => [...current, ...incoming.filter((x) => !current.some((y) => y.id === x.id))];
 export const canComment = (state: string) =>
   state === "in_progress" || state === "blocked";
 export const jobDetail = (x: any) => ({ ...x.job, events: x.events });
@@ -184,10 +186,9 @@ function JobDetail({
         Archive job
       </button>
       <h3>Timeline</h3>
-      <pre className="timeline">
-        {j.events?.map((e: any) => `[${e.kind}] ${e.content}`).join("\n") ||
-          "No output yet"}
-      </pre>
+      <div className="conversation">
+        {j.events?.length ? j.events.map((e: any) => <div key={e.id} className={`bubble ${eventSide(e.kind)} ${e.kind}`}><small>{eventSide(e.kind) === "sent" ? "You" : e.kind === "error" ? "Error" : "Agent"}</small><span>{e.content}</span></div>) : <p>No output yet</p>}
+      </div>
       {canComment(j.state) && (
         <div className="commentbox">
           <label>
@@ -249,6 +250,10 @@ function LegacyApp() {
     [form, setForm] = useState<any>({}),
     [settings, setSettings] = useState<any>(),
     [job, setJob] = useState<any>(),
+    [notifications, setNotifications] = useState<any[]>([]),
+    [notificationMore, setNotificationMore] = useState(false),
+    [unread, setUnread] = useState(0),
+    [toast, setToast] = useState<any>(),
     [pending, setPending] = useState(false),
     pendingRef = useRef(false);
   const load = async () => {
@@ -267,8 +272,26 @@ function LegacyApp() {
       })
       .catch(() => setMe(false));
   }, []);
+  useEffect(() => {
+    if (!me) return;
+    let previous = new Set<number>();
+    const poll = async () => {
+      const page = await api("/notifications?limit=10");
+      const fresh = page.notifications.find((n: any) => !previous.has(n.id));
+      if (previous.size && fresh) setToast(fresh);
+      previous = new Set(page.notifications.map((n: any) => n.id));
+      setNotifications(page.notifications); setNotificationMore(page.has_more); setUnread(page.unread);
+      await load();
+    };
+    poll(); const timer = setInterval(poll, 2000); return () => clearInterval(timer);
+  }, [me]);
   if (me === undefined) return null;
   if (!me) return <Auth />;
+  const openNotification = async (n: any) => {
+    await api(`/notifications/${n.id}`, {method:"PATCH", body:JSON.stringify({read:true})});
+    setNotifications(notifications.map(x => x.id === n.id ? {...x, read:true} : x)); setUnread(Math.max(0, unread-Number(!n.read))); setToast(undefined);
+    if (n.job_id) setJob(jobDetail(await api(`/jobs/${n.job_id}`)));
+  };
   const openJob = async (c?: any) => {
     if (pendingRef.current) return;
     pendingRef.current = true;
@@ -362,6 +385,14 @@ function LegacyApp() {
           <button onClick={() => setDialog("workspace")}>New workspace</button>
           <button onClick={() => setDialog("board")}>New board</button>
         </nav>
+        <details className="notifications">
+          <summary aria-label="Notifications">🔔{unread > 0 && <b>{unread}</b>}</summary>
+          <div className="notificationmenu" onScroll={async e=>{const el=e.currentTarget;if(notificationMore&&el.scrollTop+el.clientHeight>=el.scrollHeight-20){setNotificationMore(false);const page=await api(`/notifications?limit=10&before=${notifications.at(-1)?.id}`);setNotifications(mergeNotifications(notifications,page.notifications));setNotificationMore(page.has_more)}}}>
+            <button onClick={async()=>{await api("/notifications/mark-unread",{method:"POST",body:"{}"});setNotifications(notifications.map(n=>({...n,read:false})));setUnread(notifications.length)}}>Mark unread</button>
+            {notifications.map(n=><button key={n.id} className={n.read ? "read" : ""} onClick={()=>openNotification(n)}><strong>{n.title}</strong><small>{n.created_at}</small></button>)}
+            {notificationMore && <small className="loading">Scroll for more</small>}
+          </div>
+        </details>
         <details className="account">
           <summary aria-label="Account menu">
             <span aria-hidden="true">{me.email.slice(0, 1).toUpperCase()}</span>
@@ -451,6 +482,7 @@ function LegacyApp() {
           </button>
         )}
       </main>
+      {toast && <button className={`toast ${toast.kind}`} onClick={()=>openNotification(toast)}>{toast.title}</button>}
       {job && (
         <JobDetail job={job} close={() => setJob(undefined)} refresh={load} />
       )}{" "}

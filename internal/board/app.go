@@ -87,7 +87,9 @@ CREATE TABLE IF NOT EXISTS user_settings(user_id INTEGER PRIMARY KEY REFERENCES 
 CREATE TABLE IF NOT EXISTS lanes(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,position));
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),cli_tool TEXT NOT NULL,position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,UNIQUE(lane_id,position));
 CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,attempt INTEGER NOT NULL,tmux_session TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,ended_at TEXT,result_summary TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));`)
+CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,job_id INTEGER REFERENCES jobs ON DELETE CASCADE,job_run_id INTEGER REFERENCES job_runs ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('done','error')),title TEXT NOT NULL,read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,kind));
+CREATE INDEX IF NOT EXISTS notifications_user_id ON notifications(user_id,id DESC);`)
 	if e != nil {
 		return e
 	}
@@ -211,6 +213,8 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/lanes", a.auth(http.HandlerFunc(a.lanes)))
 	m.Handle("/api/lanes/", a.auth(http.HandlerFunc(a.lanePath)))
 	m.Handle("/api/jobs/", a.auth(http.HandlerFunc(a.jobPath)))
+	m.Handle("/api/notifications", a.auth(http.HandlerFunc(a.notifications)))
+	m.Handle("/api/notifications/", a.auth(http.HandlerFunc(a.notificationPath)))
 	m.Handle("/api/settings", a.auth(http.HandlerFunc(a.settings)))
 	m.Handle("/api/cli-tools", a.auth(http.HandlerFunc(a.tools)))
 	m.Handle("/api/workspaces", a.auth(http.HandlerFunc(a.workspaces)))
@@ -491,6 +495,68 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fail(w, 405, "method not allowed")
+}
+func (a *App) notifications(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 50 {
+		limit = 10
+	}
+	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	if before == 0 {
+		before = 1 << 62
+	}
+	rows, _ := a.DB.Query(`SELECT id,job_id,kind,title,read,created_at FROM notifications WHERE user_id=? AND id<? ORDER BY id DESC LIMIT ?`, uid(r), before, limit+1)
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var job sql.NullInt64
+		var kind, title, created string
+		var read bool
+		rows.Scan(&id, &job, &kind, &title, &read, &created)
+		var jobID any
+		if job.Valid {
+			jobID = job.Int64
+		}
+		out = append(out, map[string]any{"id": id, "job_id": jobID, "kind": kind, "title": title, "read": read, "created_at": created})
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	var unread int
+	a.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=? AND read=0", uid(r)).Scan(&unread)
+	jsonOut(w, 200, map[string]any{"notifications": out, "has_more": hasMore, "unread": unread})
+}
+func (a *App) notificationPath(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/notifications/")
+	if rest == "mark-unread" && r.Method == "POST" {
+		a.DB.Exec("UPDATE notifications SET read=0 WHERE user_id=?", uid(r))
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	id, e := strconv.ParseInt(strings.Trim(rest, "/"), 10, 64)
+	if e != nil || r.Method != "PATCH" {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	var x struct {
+		Read bool `json:"read"`
+	}
+	if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
+		return
+	}
+	res, _ := a.DB.Exec("UPDATE notifications SET read=? WHERE id=? AND user_id=?", x.Read, id, uid(r))
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fail(w, 404, "not found")
+		return
+	}
+	jsonOut(w, 200, map[string]bool{"ok": true})
+}
+func (a *App) notify(job, run int64, kind string) {
+	a.DB.Exec(`INSERT OR IGNORE INTO notifications(user_id,job_id,job_run_id,kind,title) SELECT user_id,id,?,?,CASE ? WHEN 'done' THEN 'Job completed: ' ELSE 'Job errored: ' END||task FROM jobs WHERE id=?`, run, kind, kind, job)
 }
 func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state string) {
 	if r.Method != "POST" {
@@ -1064,6 +1130,7 @@ func (a *App) startHermes(id int64, prompt string) {
 		a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'output',?)", run, out)
 		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", out, run)
 		a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.notify(id, run, "done")
 		a.signal()
 	}()
 }
@@ -1087,6 +1154,7 @@ func (a *App) monitor(job, run int64, session string) {
 		if e != nil {
 			a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", last, run)
 			a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_progress'", job)
+			a.notify(job, run, "done")
 			a.signal()
 			return
 		}
@@ -1097,6 +1165,7 @@ func (a *App) block(job, run int64, msg string) {
 	a.DB.Exec("UPDATE job_runs SET status='blocked',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", msg, run)
 	a.DB.Exec("INSERT OR IGNORE INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'error',?)", run, msg)
 	a.DB.Exec("UPDATE jobs SET state='blocked',warning=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", msg, job)
+	a.notify(job, run, "error")
 }
 func (a *App) reconcile() {
 	rows, _ := a.DB.Query("SELECT id,job_id,tmux_session FROM job_runs WHERE status='running'")

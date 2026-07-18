@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -98,6 +99,46 @@ func TestSettingsRequireAuthentication(t *testing.T) {
 	w, _ := req(t, a.Handler(), nil, "GET", "/api/settings", "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("logged-out settings access=%d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestNotificationsArePaginatedAndOwnerScoped(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"notify@example.com","password":"password1"}`)
+	req(t, h, nil, "POST", "/api/auth/signup", `{"email":"other-notify@example.com","password":"password1"}`)
+	var ownerID, otherID int64
+	a.DB.QueryRow("SELECT id FROM users WHERE email='notify@example.com'").Scan(&ownerID)
+	a.DB.QueryRow("SELECT id FROM users WHERE email='other-notify@example.com'").Scan(&otherID)
+	for i := 0; i < 12; i++ {
+		a.DB.Exec("INSERT INTO notifications(user_id,job_id,kind,title) VALUES(?,NULL,'done',?)", ownerID, fmt.Sprintf("Job %02d", i))
+	}
+	a.DB.Exec("INSERT INTO notifications(user_id,job_id,kind,title) VALUES(?,NULL,'error','Private')", otherID)
+	w, _ := req(t, h, owner, "GET", "/api/notifications?limit=10", "")
+	var page struct {
+		Notifications []map[string]any `json:"notifications"`
+		HasMore       bool             `json:"has_more"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &page) != nil || w.Code != 200 || len(page.Notifications) != 10 || !page.HasMore || strings.Contains(w.Body.String(), "Private") {
+		t.Fatalf("page: %d %s", w.Code, w.Body.String())
+	}
+	first := int64(page.Notifications[0]["id"].(float64))
+	w, _ = req(t, h, owner, "PATCH", "/api/notifications/"+itoa(first), `{"read":true}`)
+	if w.Code != 200 {
+		t.Fatalf("read: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, owner, "POST", "/api/notifications/mark-unread", `{}`)
+	if w.Code != 200 {
+		t.Fatalf("mark unread: %d %s", w.Code, w.Body.String())
+	}
+	var read int
+	a.DB.QueryRow("SELECT read FROM notifications WHERE id=?", first).Scan(&read)
+	if read != 0 {
+		t.Fatal("notification was not marked unread")
 	}
 }
 
