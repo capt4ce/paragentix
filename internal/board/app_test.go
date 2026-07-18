@@ -66,8 +66,8 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 		t.Fatalf("tool: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, owner, "GET", "/api/boards", "")
-	if w.Code != 200 || w.Body.String() != "[]\n" {
-		t.Fatalf("board alias: %d %s", w.Code, w.Body.String())
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"Default Board"`) || !strings.Contains(w.Body.String(), `"workspaceName":"Default"`) {
+		t.Fatalf("signup default board: %d %s", w.Code, w.Body.String())
 	}
 }
 

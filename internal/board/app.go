@@ -269,6 +269,7 @@ func (a *App) signup(w http.ResponseWriter, r *http.Request) {
 	wid, _ := wr.LastInsertId()
 	tx.Exec("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'owner')", wid, id)
 	tx.Exec("INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,'Default Project',?)", id, wid, a.Workspace)
+	tx.Exec("INSERT INTO boards(user_id,workspace_id,name) VALUES(?,?,'Default Board')", id, wid)
 	tx.Exec("INSERT INTO lanes(user_id,name,position) VALUES(?,'Lane 1',0)", id)
 	tx.Commit()
 	a.newSession(w, id)
