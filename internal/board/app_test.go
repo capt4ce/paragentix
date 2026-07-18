@@ -43,7 +43,7 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 	_, other := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"other@example.com","password":"password2"}`)
 
 	w, _ := req(t, h, owner, "GET", "/api/workspaces", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"projectDirectory":"`+root+`"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"role":"owner"`) || strings.Contains(w.Body.String(), "projectDirectory") {
 		t.Fatalf("workspaces: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, owner, "POST", "/api/projects", `{"name":"App","directory":"project"}`)
@@ -189,7 +189,13 @@ func TestV2ColumnUsesMappedLane(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &out)
 	boardID := int64(out["id"].(float64))
-	w, _ = req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"worktreeEnabled":false}`)
+	w, _ = req(t, h, cookie, "POST", "/api/workspaces/"+itoa(workspaceID)+"/projects", `{"name":"App","directory":"`+workspace+`"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("project: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &out)
+	projectID := int64(out["id"].(float64))
+	w, _ = req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"projectId":`+itoa(projectID)+`,"worktreeEnabled":false}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("column: %d %s", w.Code, w.Body.String())
 	}

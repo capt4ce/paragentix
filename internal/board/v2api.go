@@ -57,11 +57,11 @@ func (a *App) workspaceRoot() string {
 	}
 	return a.Workspace
 }
-func workspaceJSON(id int64, name, dir, real string) map[string]any {
-	return map[string]any{"id": id, "name": name, "projectDirectory": dir, "projectDirectoryReal": real}
+func workspaceJSON(id int64, name string, v ...any) map[string]any {
+	return map[string]any{"id": id, "name": name}
 }
 
-func (a *App) workspaces(w http.ResponseWriter, r *http.Request) {
+func (a *App) workspacesOld(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		rows, e := a.DB.Query(`SELECT id,name,root FROM workspaces WHERE user_id=? ORDER BY name`, uid(r))
@@ -104,7 +104,7 @@ func (a *App) workspaces(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "method not allowed")
 	}
 }
-func (a *App) workspacePath(w http.ResponseWriter, r *http.Request) {
+func (a *App) workspacePathOld(w http.ResponseWriter, r *http.Request) {
 	id, e := pathID(strings.TrimPrefix(r.URL.Path, "/api/workspaces/"))
 	if e != nil {
 		fail(w, 404, "not found")
@@ -166,14 +166,14 @@ func (a *App) workspacePath(w http.ResponseWriter, r *http.Request) {
 func (a *App) boards(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, _ := a.DB.Query(`SELECT b.id,b.name,b.workspace_id,w.name,w.root FROM boards b JOIN workspaces w ON w.id=b.workspace_id WHERE b.user_id=? ORDER BY b.id`, uid(r))
+		rows, _ := a.DB.Query(`SELECT b.id,b.name,b.workspace_id,w.name FROM boards b JOIN workspaces w ON w.id=b.workspace_id JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=? ORDER BY b.id`, uid(r))
 		defer rows.Close()
 		out := []map[string]any{}
 		for rows.Next() {
 			var id, wid int64
-			var n, wn, d string
-			rows.Scan(&id, &n, &wid, &wn, &d)
-			out = append(out, map[string]any{"id": id, "name": n, "workspaceId": wid, "workspaceName": wn, "projectDirectory": d})
+			var n, wn string
+			rows.Scan(&id, &n, &wid, &wn)
+			out = append(out, map[string]any{"id": id, "name": n, "workspaceId": wid, "workspaceName": wn})
 		}
 		jsonOut(w, 200, out)
 	case "POST":
@@ -185,8 +185,7 @@ func (a *App) boards(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "name and workspaceId required")
 			return
 		}
-		var ok int
-		if a.DB.QueryRow(`SELECT 1 FROM workspaces WHERE id=? AND user_id=?`, x.WorkspaceID, uid(r)).Scan(&ok) != nil {
+		if _, ok := a.role(uid(r), x.WorkspaceID); !ok {
 			fail(w, 404, "workspace not found")
 			return
 		}
@@ -208,8 +207,8 @@ func (a *App) boardPath(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "not found")
 		return
 	}
-	var ok int
-	if a.DB.QueryRow(`SELECT 1 FROM boards WHERE id=? AND user_id=?`, id, uid(r)).Scan(&ok) != nil {
+	var role string
+	if a.DB.QueryRow(`SELECT m.role FROM boards b JOIN workspace_members m ON m.workspace_id=b.workspace_id WHERE b.id=? AND m.user_id=?`, id, uid(r)).Scan(&role) != nil {
 		fail(w, 404, "not found")
 		return
 	}
@@ -219,13 +218,17 @@ func (a *App) boardPath(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "DELETE":
+		if role != "owner" {
+			fail(w, 403, "owner required")
+			return
+		}
 		var n int
 		a.DB.QueryRow(`SELECT count(*) FROM columns WHERE board_id=?`, id).Scan(&n)
 		if n > 0 {
 			fail(w, 409, "board has columns")
 			return
 		}
-		a.DB.Exec(`DELETE FROM boards WHERE id=? AND user_id=?`, id, uid(r))
+		a.DB.Exec(`DELETE FROM boards WHERE id=?`, id)
 		w.WriteHeader(204)
 	default:
 		fail(w, 405, "method not allowed")
@@ -269,16 +272,17 @@ func gitOutput(args ...string) error {
 }
 func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	if r.Method == "GET" {
-		rows, _ := a.DB.Query(`SELECT id,name,position,paused,worktree_enabled,worktree_name,worktree_path FROM columns WHERE board_id=? AND archived=0 ORDER BY position`, board)
+		rows, _ := a.DB.Query(`SELECT c.id,c.name,c.position,c.paused,c.worktree_enabled,c.worktree_name,c.worktree_path,c.project_id,p.name FROM columns c LEFT JOIN projects p ON p.id=c.project_id WHERE c.board_id=? AND c.archived=0 ORDER BY c.position`, board)
 		out := []map[string]any{}
 		for rows.Next() {
 			var id int64
 			var n string
 			var p int
 			var paused, en bool
-			var wn, wp sql.NullString
-			rows.Scan(&id, &n, &p, &paused, &en, &wn, &wp)
-			out = append(out, map[string]any{"id": id, "name": n, "position": p, "paused": paused, "worktreeEnabled": en, "worktreeName": wn.String, "effectiveDirectory": wp.String, "jobs": []Job{}})
+			var wn, wp, pn sql.NullString
+			var pid sql.NullInt64
+			rows.Scan(&id, &n, &p, &paused, &en, &wn, &wp, &pid, &pn)
+			out = append(out, map[string]any{"id": id, "name": n, "position": p, "paused": paused, "projectId": pid.Int64, "projectName": pn.String, "worktreeEnabled": en, "worktreeName": wn.String, "effectiveDirectory": wp.String, "jobs": []Job{}})
 		}
 		rows.Close()
 		for _, c := range out {
@@ -301,11 +305,17 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	}
 	var x struct {
 		Name            string `json:"name"`
+		ProjectID       int64  `json:"projectId"`
 		WorktreeEnabled bool   `json:"worktreeEnabled"`
 		WorktreeName    string `json:"worktreeName"`
 	}
 	if decode(r, &x) != nil {
 		fail(w, 400, "invalid request")
+		return
+	}
+	var projectDir string
+	if x.ProjectID == 0 || a.DB.QueryRow(`SELECT p.directory FROM projects p JOIN boards b ON b.workspace_id=p.workspace_id WHERE p.id=? AND b.id=?`, x.ProjectID, board).Scan(&projectDir) != nil {
+		fail(w, 400, "projectId from this workspace required")
 		return
 	}
 	x.Name = strings.TrimSpace(x.Name)
@@ -322,8 +332,7 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 			fail(w, 400, "worktreeName must match ^[a-z0-9]+(?:-[a-z0-9]+)*$")
 			return
 		}
-		var project string
-		a.DB.QueryRow(`SELECT w.root FROM boards b JOIN workspaces w ON w.id=b.workspace_id WHERE b.id=?`, board).Scan(&project)
+		project := projectDir
 		if _, _, e := canonicalDir(a.workspaceRoot(), project); e != nil {
 			fail(w, 409, e.Error())
 			return
@@ -362,7 +371,7 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 		return
 	}
 	laneID, _ := laneRes.LastInsertId()
-	res, e := tx.Exec(`INSERT INTO columns(user_id,board_id,lane_id,name,position,worktree_enabled,worktree_name,worktree_path) VALUES(?,?,?,?,?,?,?,?)`, uid(r), board, laneID, x.Name, p, x.WorktreeEnabled, wn, wp)
+	res, e := tx.Exec(`INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position,worktree_enabled,worktree_name,worktree_path) VALUES(?,?,?,?,?,?,?,?,?)`, uid(r), board, laneID, x.ProjectID, x.Name, p, x.WorktreeEnabled, wn, wp)
 	if e != nil {
 		tx.Rollback()
 		if wp != nil {
@@ -373,7 +382,7 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	}
 	id, _ := res.LastInsertId()
 	tx.Commit()
-	jsonOut(w, 201, map[string]any{"id": id, "name": x.Name, "worktreeEnabled": x.WorktreeEnabled, "worktreeName": wn})
+	jsonOut(w, 201, map[string]any{"id": id, "name": x.Name, "projectId": x.ProjectID, "worktreeEnabled": x.WorktreeEnabled, "worktreeName": wn})
 }
 func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/columns/")
@@ -383,9 +392,9 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wt bool
-	var laneID int64
+	var laneID, wid int64
 	var path sql.NullString
-	if a.DB.QueryRow(`SELECT lane_id,worktree_enabled,worktree_path FROM columns WHERE id=? AND user_id=?`, id, uid(r)).Scan(&laneID, &wt, &path) != nil {
+	if a.DB.QueryRow(`SELECT c.lane_id,c.worktree_enabled,c.worktree_path,b.workspace_id FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id WHERE c.id=? AND m.user_id=?`, id, uid(r)).Scan(&laneID, &wt, &path, &wid) != nil {
 		fail(w, 404, "not found")
 		return
 	}
@@ -396,8 +405,9 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "PATCH":
 		var x struct {
-			Name   *string `json:"name"`
-			Paused *bool   `json:"paused"`
+			Name      *string `json:"name"`
+			Paused    *bool   `json:"paused"`
+			ProjectID *int64  `json:"projectId"`
 		}
 		if decode(r, &x) != nil {
 			fail(w, 400, "invalid request")
@@ -416,9 +426,17 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 			a.DB.Exec(`UPDATE columns SET paused=? WHERE id=?`, *x.Paused, id)
 			a.DB.Exec(`UPDATE lanes SET paused=? WHERE id=?`, *x.Paused, laneID)
 		}
+		if x.ProjectID != nil {
+			var ok int
+			if a.DB.QueryRow(`SELECT 1 FROM projects WHERE id=? AND workspace_id=?`, *x.ProjectID, wid).Scan(&ok) != nil {
+				fail(w, 400, "projectId from this workspace required")
+				return
+			}
+			a.DB.Exec(`UPDATE columns SET project_id=? WHERE id=?`, *x.ProjectID, id)
+		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
 	case "DELETE":
-		a.DB.Exec(`UPDATE columns SET archived=1 WHERE id=? AND user_id=?`, id, uid(r))
+		a.DB.Exec(`UPDATE columns SET archived=1 WHERE id=?`, id)
 		w.WriteHeader(204)
 	default:
 		fail(w, 405, "method not allowed")

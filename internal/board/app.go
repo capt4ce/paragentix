@@ -37,6 +37,8 @@ type App struct {
 	wake      chan struct{}
 	stop      chan struct{}
 	wg        sync.WaitGroup
+	Mailer    Mailer
+	BaseURL   string
 }
 type ctxKey struct{}
 type Job struct {
@@ -95,6 +97,9 @@ CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEG
 CREATE TABLE IF NOT EXISTS boards(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL UNIQUE REFERENCES workspaces ON DELETE RESTRICT,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,board_id INTEGER NOT NULL REFERENCES boards ON DELETE CASCADE,lane_id INTEGER UNIQUE REFERENCES lanes ON DELETE RESTRICT,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,worktree_enabled INTEGER NOT NULL DEFAULT 0,worktree_name TEXT,worktree_path TEXT,CHECK((worktree_enabled=0 AND worktree_name IS NULL AND worktree_path IS NULL) OR (worktree_enabled=1 AND worktree_name IS NOT NULL AND worktree_path IS NOT NULL)),UNIQUE(board_id,position));`)
 	if e == nil {
+		e = a.migrateCardinality()
+	}
+	if e == nil {
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_url TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_api_key TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_model TEXT NOT NULL DEFAULT 'hermes-agent'`)
@@ -105,11 +110,63 @@ CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NU
 		a.DB.Exec(`ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE columns ADD COLUMN lane_id INTEGER REFERENCES lanes ON DELETE RESTRICT`)
 		a.DB.Exec(`ALTER TABLE columns ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`)
+		a.DB.Exec(`ALTER TABLE columns ADD COLUMN project_id INTEGER REFERENCES projects ON DELETE RESTRICT`)
+		_, e = a.DB.Exec(`CREATE TABLE IF NOT EXISTS workspace_members(workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN('owner','member')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(workspace_id,user_id)); CREATE TABLE IF NOT EXISTS workspace_invitations(id INTEGER PRIMARY KEY,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,email TEXT NOT NULL,token_hash TEXT UNIQUE NOT NULL,invited_by INTEGER NOT NULL REFERENCES users,expires_at TEXT NOT NULL,accepted_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE UNIQUE INDEX IF NOT EXISTS active_workspace_invitation ON workspace_invitations(workspace_id,email) WHERE accepted_at IS NULL;`)
 		a.DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS columns_lane_id ON columns(lane_id)`)
 		a.DB.Exec(`UPDATE columns SET lane_id=id WHERE lane_id IS NULL AND EXISTS(SELECT 1 FROM lanes WHERE lanes.id=columns.id)`)
-		_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspaces(user_id,name,root) SELECT user_id,'Default',workspace_root FROM user_settings`)
+		_, e = a.DB.Exec(`INSERT INTO workspaces(user_id,name,root) SELECT s.user_id,'Default',s.workspace_root FROM user_settings s WHERE NOT EXISTS(SELECT 1 FROM workspaces w WHERE w.user_id=s.user_id AND w.root=s.workspace_root AND w.root<>'')`)
+		if e == nil {
+			_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspace_members(workspace_id,user_id,role) SELECT id,user_id,'owner' FROM workspaces; INSERT OR IGNORE INTO projects(user_id,workspace_id,name,directory) SELECT user_id,id,'Default Project',root FROM workspaces WHERE root<>''; UPDATE columns SET project_id=(SELECT p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.id=columns.board_id ORDER BY p.id LIMIT 1) WHERE project_id IS NULL;`)
+		}
 	}
 	return e
+}
+func (a *App) migrateCardinality() (err error) {
+	conn, err := a.DB.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		if _, e := conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err == nil {
+			err = e
+		}
+	}()
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var ws, bs string
+	if err = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='workspaces'`).Scan(&ws); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='boards'`).Scan(&bs); err != nil {
+		return err
+	}
+	statements := []string{`DROP TABLE IF EXISTS workspaces_new`, `DROP TABLE IF EXISTS boards_new`}
+	if strings.Contains(strings.ReplaceAll(ws, " ", ""), "UNIQUE(user_id,root)") {
+		statements = append(statements, `CREATE TABLE workspaces_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,root TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`, `INSERT INTO workspaces_new SELECT * FROM workspaces`, `DROP TABLE workspaces`, `ALTER TABLE workspaces_new RENAME TO workspaces`)
+	}
+	if strings.Contains(strings.ReplaceAll(bs, " ", ""), "workspace_idINTEGERNOTNULLUNIQUE") {
+		statements = append(statements, `CREATE TABLE boards_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE RESTRICT,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`, `INSERT INTO boards_new SELECT * FROM boards`, `DROP TABLE boards`, `ALTER TABLE boards_new RENAME TO boards`)
+	}
+	for _, statement := range statements {
+		if _, err = tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	var broken sql.NullString
+	if err = tx.QueryRow(`SELECT group_concat("table"||':'||rowid||':'||parent) FROM pragma_foreign_key_check`).Scan(&broken); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if broken.Valid {
+		return fmt.Errorf("foreign key check failed: %s", broken.String)
+	}
+	return tx.Commit()
 }
 func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -163,6 +220,8 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/boards", a.auth(http.HandlerFunc(a.boards)))
 	m.Handle("/api/boards/", a.auth(http.HandlerFunc(a.boardPath)))
 	m.Handle("/api/columns/", a.auth(http.HandlerFunc(a.columnPath)))
+	m.HandleFunc("GET /api/invitations/{token}", a.invitationPreview)
+	m.Handle("POST /api/invitations/{token}", a.auth(http.HandlerFunc(a.invitationAccept)))
 	sub, _ := fs.Sub(web, "web")
 	files := http.FileServer(http.FS(sub))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +265,10 @@ func (a *App) signup(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := res.LastInsertId()
 	tx.Exec("INSERT INTO user_settings(user_id,workspace_root) VALUES(?,?)", id, a.Workspace)
-	tx.Exec("INSERT INTO workspaces(user_id,name,root) VALUES(?,'Default',?)", id, a.Workspace)
+	wr, _ := tx.Exec("INSERT INTO workspaces(user_id,name,root) VALUES(?,'Default',?)", id, a.Workspace)
+	wid, _ := wr.LastInsertId()
+	tx.Exec("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'owner')", wid, id)
+	tx.Exec("INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,'Default Project',?)", id, wid, a.Workspace)
 	tx.Exec("INSERT INTO lanes(user_id,name,position) VALUES(?,'Lane 1',0)", id)
 	tx.Commit()
 	a.newSession(w, id)
@@ -685,34 +747,53 @@ func (a *App) projects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var x struct {
-		Name, Directory string
-		WorkspaceID     int64 `json:"workspace_id"`
+		Name, Directory   string
+		WorkspaceID       int64 `json:"workspaceId"`
+		LegacyWorkspaceID int64 `json:"workspace_id"`
 	}
-	if decode(r, &x) != nil || strings.TrimSpace(x.Name) == "" {
-		fail(w, 400, "name and directory required")
+	if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
 		return
 	}
-	var wid int64
-	var root string
 	if x.WorkspaceID == 0 {
-		a.DB.QueryRow("SELECT id,root FROM workspaces WHERE user_id=? ORDER BY id LIMIT 1", uid(r)).Scan(&wid, &root)
-	} else {
-		wid = x.WorkspaceID
-		a.DB.QueryRow("SELECT root FROM workspaces WHERE id=? AND user_id=?", wid, uid(r)).Scan(&root)
+		x.WorkspaceID = x.LegacyWorkspaceID
 	}
-	path, ok := safeProjectDir(root, x.Directory)
-	info, e := os.Stat(path)
-	if !ok || e != nil || !info.IsDir() {
-		fail(w, 400, "directory must be an existing path inside workspace")
+	if x.WorkspaceID == 0 {
+		_ = a.DB.QueryRow(`SELECT workspace_id FROM workspace_members WHERE user_id=? AND role='owner' ORDER BY workspace_id LIMIT 1`, uid(r)).Scan(&x.WorkspaceID)
+	}
+	if x.WorkspaceID == 0 || strings.TrimSpace(x.Name) == "" {
+		fail(w, 400, "workspace_id, name and directory required")
 		return
 	}
-	res, e := a.DB.Exec("INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,?,?)", uid(r), wid, strings.TrimSpace(x.Name), path)
+	role, ok := a.role(uid(r), x.WorkspaceID)
+	if !ok {
+		fail(w, 404, "not found")
+		return
+	}
+	if role != "owner" {
+		fail(w, 403, "owner required")
+		return
+	}
+	directory := x.Directory
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(a.workspaceRoot(), directory)
+	}
+	d, _, e := canonicalDir(a.workspaceRoot(), directory)
+	if e != nil {
+		fail(w, 400, e.Error())
+		return
+	}
+	res, e := a.DB.Exec(`INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,?,?)`, uid(r), x.WorkspaceID, strings.TrimSpace(x.Name), d)
 	if e != nil {
 		fail(w, 409, "project unavailable")
 		return
 	}
-	id, _ := res.LastInsertId()
-	jsonOut(w, 201, map[string]any{"id": id, "directory": path})
+	id, e := res.LastInsertId()
+	if e != nil {
+		fail(w, 500, "project unavailable")
+		return
+	}
+	jsonOut(w, 201, map[string]any{"id": id, "directory": d})
 }
 func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 	id, e := pathID(strings.TrimPrefix(r.URL.Path, "/api/projects/"))
@@ -720,13 +801,40 @@ func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "not found")
 		return
 	}
-	var name, directory string
-	e = a.DB.QueryRow("SELECT name,directory FROM projects WHERE id=? AND user_id=?", id, uid(r)).Scan(&name, &directory)
+	var name, directory, role string
+	var wid int64
+	e = a.DB.QueryRow(`SELECT p.name,p.directory,p.workspace_id,m.role FROM projects p JOIN workspace_members m ON m.workspace_id=p.workspace_id WHERE p.id=? AND m.user_id=?`, id, uid(r)).Scan(&name, &directory, &wid, &role)
 	if e != nil {
 		fail(w, 404, "not found")
 		return
 	}
-	jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory})
+	if r.Method == "GET" {
+		jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory})
+		return
+	}
+	if r.Method != "PATCH" {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	if role != "owner" {
+		fail(w, 403, "owner required")
+		return
+	}
+	var x struct{ Name, Directory string }
+	if decode(r, &x) != nil || strings.TrimSpace(x.Name) == "" {
+		fail(w, 400, "name and directory required")
+		return
+	}
+	d, _, e := canonicalDir(a.workspaceRoot(), x.Directory)
+	if e != nil {
+		fail(w, 400, e.Error())
+		return
+	}
+	if _, e = a.DB.Exec(`UPDATE projects SET name=?,directory=? WHERE id=? AND workspace_id=?`, strings.TrimSpace(x.Name), d, id, wid); e != nil {
+		fail(w, 409, "project unavailable")
+		return
+	}
+	jsonOut(w, 200, map[string]any{"id": id, "name": strings.TrimSpace(x.Name), "directory": d})
 }
 func (a *App) legacyBoards(w http.ResponseWriter, r *http.Request) {
 	rw := httptestResponse{ResponseWriter: w}
@@ -872,6 +980,16 @@ func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (strin
 }
 
 func (a *App) start(id int64, task, done, cli, root string) {
+	var effective string
+	if err := a.DB.QueryRow(`SELECT CASE WHEN c.worktree_enabled=1 THEN c.worktree_path ELSE p.directory END FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id WHERE j.id=?`, id).Scan(&effective); err != nil || effective == "" {
+		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected project or worktree is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		return
+	}
+	_, validated, err := canonicalDir(a.workspaceRoot(), effective)
+	if err != nil {
+		return
+	}
+	root = validated
 	if cli == "hermes" {
 		a.startHermes(id, task+"\n\nDone definition:\n"+done)
 		return
@@ -903,11 +1021,6 @@ func (a *App) start(id int64, task, done, cli, root string) {
 	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, session)
 	run, _ := rr.LastInsertId()
 	tx.Commit()
-	var effective string
-	a.DB.QueryRow(`SELECT COALESCE(c.worktree_path,w.root) FROM jobs j LEFT JOIN columns c ON c.lane_id=j.lane_id LEFT JOIN boards b ON b.id=c.board_id LEFT JOIN workspaces w ON w.id=b.workspace_id WHERE j.id=?`, id).Scan(&effective)
-	if effective != "" {
-		root = effective
-	}
 	prompt := task + "\n\nDone definition:\n" + done
 	argv, sendKeys := jobCommand(argv, cli, prompt)
 	args := []string{"new-session", "-d", "-s", session, "-c", filepath.Clean(root), "--"}
