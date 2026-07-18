@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
@@ -119,5 +120,20 @@ describe("chat conversations", () => {
 describe("notification paging", () => {
   it("appends only unseen notifications", () => {
     expect(mergeNotifications([{id: 2}], [{id: 2}, {id: 1}])).toEqual([{id: 2}, {id: 1}]);
+  });
+});
+describe("mobile board controls", () => {
+  const app = readFileSync("src/App.tsx", "utf8");
+  const css = readFileSync("src/index.css", "utf8");
+  it("keeps dropdown positioning owned by Radix", () => {
+    const rule = css.match(/\.notificationmenu\{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).not.toMatch(/position:absolute|right:0|top:/);
+  });
+  it("makes mobile dialogs scroll inside the visual viewport", () => {
+    expect(css).toMatch(/@media\(max-width:600px\)[\s\S]*?\.modal\{[^}]*overflow-y:auto/);
+  });
+  it("renders an add-job control in every column", () => {
+    expect(app).toContain('className="add"');
+    expect(app).toContain(">+ Add job</button>");
   });
 });
