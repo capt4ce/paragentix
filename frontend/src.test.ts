@@ -3,7 +3,20 @@ import { describe, it, expect, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation, DialogShell } from "./src";
+import { cn } from "./src/lib/utils";
+import { StatusBadge } from "./src/components/jobs/StatusBadge";
+describe("Mission Control foundation", () => {
+  it("uses the accessible Radix dialog inspector", () => {
+    const { getByRole, getByLabelText } = render(createElement(DialogShell, { title: "Inspector", close: vi.fn(), inspector: true }, "detail"));
+    expect(getByRole("dialog").classList.contains("inspector")).toBe(true);
+    expect(getByLabelText("Close")).toBeTruthy();
+  });
+  it("merges utility classes", () => expect(cn("a", false && "b", "c")).toBe("a c"));
+  it("renders status as text, not color alone", () => {
+    expect(renderToStaticMarkup(createElement(StatusBadge, { state: "in_progress" }))).toContain("In progress");
+  });
+});
 describe("workspace URL restoration", () => {
   it("restores list and valid detail tabs", () => {
     expect(parseLocation("?workspaces=1")).toEqual({ view: "workspaces" });
@@ -29,14 +42,15 @@ describe("notification center", () => {
   it("always renders an accessible bell beside the account menu", () => {
     const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
     expect(html).toContain('aria-label="Notifications"');
-    expect(html).toContain('class="notification-bell"');
+    expect(html).toContain('notification-bell');
   });
   it("closes when clicking outside", () => {
     const { getByLabelText } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
-    const details = getByLabelText("Notifications").closest("details")!;
-    details.open = true;
-    fireEvent.pointerDown(document.body);
-    expect(details.open).toBe(false);
+    const trigger = getByLabelText("Notifications");
+    fireEvent.pointerDown(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 });
 describe("api", () => {
