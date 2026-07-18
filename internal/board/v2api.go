@@ -269,7 +269,7 @@ func gitOutput(args ...string) error {
 }
 func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 	if r.Method == "GET" {
-		rows, _ := a.DB.Query(`SELECT id,name,position,paused,worktree_enabled,worktree_name,worktree_path FROM columns WHERE board_id=? ORDER BY position`, board)
+		rows, _ := a.DB.Query(`SELECT id,name,position,paused,worktree_enabled,worktree_name,worktree_path FROM columns WHERE board_id=? AND archived=0 ORDER BY position`, board)
 		out := []map[string]any{}
 		for rows.Next() {
 			var id int64
@@ -418,22 +418,7 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
 	case "DELETE":
-		var n int
-		a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE lane_id=?`, laneID).Scan(&n)
-		if n > 0 {
-			fail(w, 409, "column must be empty")
-			return
-		}
-		if wt {
-			if e := gitOutput("worktree", "remove", "--", path.String); e != nil {
-				fail(w, 409, "worktree has changes or cannot be removed: "+e.Error())
-				return
-			}
-		}
-		tx, _ := a.DB.Begin()
-		tx.Exec(`DELETE FROM columns WHERE id=? AND user_id=?`, id, uid(r))
-		tx.Exec(`DELETE FROM lanes WHERE id=? AND user_id=?`, laneID, uid(r))
-		tx.Commit()
+		a.DB.Exec(`UPDATE columns SET archived=1 WHERE id=? AND user_id=?`, id, uid(r))
 		w.WriteHeader(204)
 	default:
 		fail(w, 405, "method not allowed")

@@ -89,6 +89,18 @@ func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
 	}
 }
 
+func TestSettingsRequireAuthentication(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	w, _ := req(t, a.Handler(), nil, "GET", "/api/settings", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out settings access=%d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestCodexJobPromptIsPassedAsExecArgument(t *testing.T) {
 	prompt := "Implement responsive design\n\nDone definition:\nWorks on mobile"
 	got, sendKeys := jobCommand([]string{"codex", "-m", "gpt-5.6", "--yolo"}, "codex", prompt)
