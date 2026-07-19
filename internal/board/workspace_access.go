@@ -1,6 +1,8 @@
 package board
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -14,6 +16,41 @@ type Mailer interface {
 	Send(to, subject, body string) error
 }
 type SMTPMailer struct{ Addr, User, Password, From string }
+
+type ResendMailer struct {
+	APIKey, From, URL string
+	Client            *http.Client
+}
+
+func (m ResendMailer) Send(to, subject, body string) error {
+	payload, e := json.Marshal(map[string]any{"from": m.From, "to": []string{to}, "subject": subject, "text": body})
+	if e != nil {
+		return e
+	}
+	url := m.URL
+	if url == "" {
+		url = "https://api.resend.com/emails"
+	}
+	req, e := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if e != nil {
+		return e
+	}
+	req.Header.Set("Authorization", "Bearer "+m.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := m.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, e := client.Do(req)
+	if e != nil {
+		return e
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("email delivery failed: %s", resp.Status)
+	}
+	return nil
+}
 
 func (m SMTPMailer) Send(to, subject, body string) error {
 	if m.Addr == "" || m.From == "" {
@@ -29,6 +66,9 @@ func (m SMTPMailer) Send(to, subject, body string) error {
 func (a *App) mailer() Mailer {
 	if a.Mailer != nil {
 		return a.Mailer
+	}
+	if key, from := os.Getenv("RESEND_API_KEY"), os.Getenv("RESEND_FROM_EMAIL"); key != "" && from != "" {
+		return ResendMailer{APIKey: key, From: from}
 	}
 	return SMTPMailer{os.Getenv("SMTP_ADDR"), os.Getenv("SMTP_USER"), os.Getenv("SMTP_PASSWORD"), os.Getenv("SMTP_FROM")}
 }

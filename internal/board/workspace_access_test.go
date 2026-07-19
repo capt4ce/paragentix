@@ -19,6 +19,31 @@ func (m testMailer) Send(_, _, body string) error {
 	return nil
 }
 
+func TestResendMailer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("request method=%q auth=%q content-type=%q", r.Method, r.Header.Get("Authorization"), r.Header.Get("Content-Type"))
+		}
+		var payload struct {
+			From, Subject, Text string
+			To                  []string
+		}
+		if e := json.NewDecoder(r.Body).Decode(&payload); e != nil {
+			t.Fatal(e)
+		}
+		if payload.From != "Paragentix <invites@example.test>" || len(payload.To) != 1 || payload.To[0] != "user@example.test" || payload.Subject != "Workspace invitation" || payload.Text != "https://example.test/?invite=token" {
+			t.Fatalf("payload=%+v", payload)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	m := ResendMailer{APIKey: "test-key", From: "Paragentix <invites@example.test>", URL: server.URL, Client: server.Client()}
+	if e := m.Send("user@example.test", "Workspace invitation", "https://example.test/?invite=token"); e != nil {
+		t.Fatal(e)
+	}
+}
+
 func TestInvitationURLUsesRequestOriginByDefault(t *testing.T) {
 	a, e := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if e != nil {
