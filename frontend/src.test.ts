@@ -98,13 +98,22 @@ describe("account menu", () => {
   });
 });
 describe("notification center", () => {
+  it("offers to mark all notifications read", async () => {
+    const onMarkRead = vi.fn();
+    const { findByText, getByLabelText, queryByText, unmount } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkRead, onLoadMore: () => {} }));
+    fireEvent.pointerDown(getByLabelText("Notifications"));
+    fireEvent.click(await findByText("Mark Read"));
+    expect(queryByText("Mark unread")).toBeNull();
+    expect(onMarkRead).toHaveBeenCalledOnce();
+    unmount();
+  });
   it("always renders an accessible bell beside the account menu", () => {
-    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkRead: () => {}, onLoadMore: () => {} }));
     expect(html).toContain('aria-label="Notifications"');
     expect(html).toContain('notification-bell');
   });
   it.each([[1, "1"], [9, "9"], [10, "9+"], [42, "9+"]])("shows unread count %i as %s", (unread, count) => {
-    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread, more: false, onOpen: () => {}, onMarkRead: () => {}, onLoadMore: () => {} }));
     expect(html).toContain(`<b>${count}</b>`);
   });
   it("keeps the icon button compact when its badge is visible", () => {
@@ -112,7 +121,7 @@ describe("notification center", () => {
     expect(css).toMatch(/\.notification-bell\{[^}]*margin:0[^}]*padding:0/);
   });
   it("closes when clicking outside", () => {
-    const { getByLabelText } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    const { getByLabelText } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkRead: () => {}, onLoadMore: () => {} }));
     const trigger = getByLabelText("Notifications");
     fireEvent.pointerDown(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("true");

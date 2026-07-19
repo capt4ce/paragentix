@@ -315,14 +315,18 @@ func TestNotificationsArePaginatedAndOwnerScoped(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("read: %d %s", w.Code, w.Body.String())
 	}
-	w, _ = req(t, h, owner, "POST", "/api/notifications/mark-unread", `{}`)
+	w, _ = req(t, h, owner, "POST", "/api/notifications/mark-read", `{}`)
 	if w.Code != 200 {
-		t.Fatalf("mark unread: %d %s", w.Code, w.Body.String())
+		t.Fatalf("mark read: %d %s", w.Code, w.Body.String())
 	}
-	var read int
-	a.DB.QueryRow("SELECT read FROM notifications WHERE id=?", first).Scan(&read)
-	if read != 0 {
-		t.Fatal("notification was not marked unread")
+	var unread int
+	a.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=? AND read=0", ownerID).Scan(&unread)
+	if unread != 0 {
+		t.Fatalf("owner has %d unread notifications after marking all read", unread)
+	}
+	a.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=? AND read=0", otherID).Scan(&unread)
+	if unread != 1 {
+		t.Fatalf("other user has %d unread notifications, want 1", unread)
 	}
 }
 

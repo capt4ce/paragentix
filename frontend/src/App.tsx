@@ -528,15 +528,15 @@ export function App() {
             unread={unread}
             more={notificationMore}
             onOpen={openNotification}
-            onMarkUnread={async () => {
-              await api("/notifications/mark-unread", {
+            onMarkRead={async () => {
+              await api("/notifications/mark-read", {
                 method: "POST",
                 body: "{}",
               });
               setNotifications(
-                notifications.map((n) => ({ ...n, read: false })),
+                notifications.map((n) => ({ ...n, read: true })),
               );
-              setUnread(notifications.length);
+              setUnread(0);
             }}
             onLoadMore={async () => {
               setNotificationMore(false);

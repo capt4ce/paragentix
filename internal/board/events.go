@@ -45,8 +45,8 @@ func (a *App) notifications(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) notificationPath(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/notifications/")
-	if rest == "mark-unread" && r.Method == "POST" {
-		a.DB.Exec("UPDATE notifications SET read=0 WHERE user_id=?", uid(r))
+	if rest == "mark-read" && r.Method == "POST" {
+		a.DB.Exec("UPDATE notifications SET read=1 WHERE user_id=?", uid(r))
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
 	}
