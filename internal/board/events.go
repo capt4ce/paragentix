@@ -111,7 +111,7 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 			fail(w, 500, "could not record status")
 			return
 		}
-		tx.Exec("UPDATE jobs SET state='todo',pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", x.Comment, id)
+		tx.Exec(`UPDATE jobs SET state='todo',position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`, id, x.Comment, id)
 		tx.Commit()
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		a.signal()

@@ -511,6 +511,53 @@ func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
 	}
 }
 
+func TestCommentOnDoneJobRequeuesAtEndOfTodoOrder(t *testing.T) {
+	a, e := Open(t.TempDir()+"/db", t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, c := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"requeue-comment@example.com","password":"password1"}`)
+	w, _ := req(t, h, c, "GET", "/api/lanes", "")
+	var lanes []Lane
+	json.Unmarshal(w.Body.Bytes(), &lanes)
+	laneID := lanes[0].ID
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", laneID)
+
+	ids := make([]int64, 3)
+	for i, task := range []string{"completed", "todo one", "todo two"} {
+		w, _ = req(t, h, c, "POST", "/api/lanes/"+itoa(laneID)+"/jobs", `{"task":"`+task+`","done_definition":"works"}`)
+		var made map[string]any
+		json.Unmarshal(w.Body.Bytes(), &made)
+		ids[i] = int64(made["id"].(float64))
+	}
+	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", ids[0])
+	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'completed-run','done',CURRENT_TIMESTAMP)", ids[0])
+
+	w, _ = req(t, h, c, "POST", "/api/jobs/"+itoa(ids[0])+"/comment", `{"comment":"follow up"}`)
+	if w.Code != 200 {
+		t.Fatalf("done comment: %d %s", w.Code, w.Body.String())
+	}
+	var state string
+	var position int
+	if e = a.DB.QueryRow("SELECT state,position FROM jobs WHERE id=?", ids[0]).Scan(&state, &position); e != nil || state != "todo" || position != 3 {
+		t.Fatalf("requeued job: state=%q position=%d err=%v", state, position, e)
+	}
+
+	w, _ = req(t, h, c, "GET", "/api/lanes", "")
+	json.Unmarshal(w.Body.Bytes(), &lanes)
+	var todoIDs []int64
+	for _, job := range lanes[0].Jobs {
+		if job.State == "todo" {
+			todoIDs = append(todoIDs, job.ID)
+		}
+	}
+	if len(todoIDs) != 3 || todoIDs[0] != ids[1] || todoIDs[1] != ids[2] || todoIDs[2] != ids[0] {
+		t.Fatalf("todo display order=%v, want [%d %d %d]", todoIDs, ids[1], ids[2], ids[0])
+	}
+}
+
 func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {
