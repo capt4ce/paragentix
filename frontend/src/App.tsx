@@ -634,32 +634,48 @@ export function App() {
             Paragentix
           </a>
         </h1>
-        <nav>
+        <nav className="board-controls">
           {view === "board" && (
-            <select
-              aria-label="Workspace board"
-              value={board?.id || ""}
-              onChange={async (e) => {
-                const b = boards.find((x) => x.id === Number(e.target.value));
-                setBoard(b);
-                setCols(await api(`/boards/${b.id}/columns`));
-              }}
-            >
-              {boards.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.workspaceName} / {b.name}
-                </option>
-              ))}
-            </select>
+            <>
+              <div className="board-select-row">
+                <select
+                  aria-label="Workspace board"
+                  value={board?.id || ""}
+                  onChange={async (e) => {
+                    const b = boards.find((x) => x.id === Number(e.target.value));
+                    setBoard(b);
+                    setCols(await api(`/boards/${b.id}/columns`));
+                  }}
+                >
+                  {boards.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.workspaceName} / {b.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className={buttonVariants({ variant: "outline", size: "icon" })}
+                  aria-label="create board"
+                  title="create board"
+                  onClick={() => {
+                    setForm({ workspaceId: ws[0]?.id });
+                    setDialog("board");
+                  }}
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+              <button
+                disabled={!cols.length}
+                onClick={() => {
+                  setForm({ columnId: cols[0]?.id, task: "", doneDefinition: "", chooseColumn: true });
+                  setDialog("job");
+                }}
+              >
+                Create job
+              </button>
+            </>
           )}
-          <button
-            onClick={() => {
-              setForm({ workspaceId: ws[0]?.id });
-              setDialog("board");
-            }}
-          >
-            Create Board
-          </button>
         </nav>
         <div className="header-actions">
           <NotificationCenter
@@ -1134,6 +1150,19 @@ export function App() {
                 </label>
               ) : dialog === "job" ? (
                 <>
+                  {form.chooseColumn && (
+                    <label>
+                      Column
+                      <select
+                        required
+                        value={form.columnId || ""}
+                        onChange={(e) => setForm({ ...form, columnId: e.target.value })}
+                      >
+                        <option value="">Select…</option>
+                        {cols.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </label>
+                  )}
                   <label>
                     Task
                     <textarea
@@ -1242,7 +1271,7 @@ export function App() {
                 </>
               )}
               <AsyncButton
-                disabled={dialog === "column" && !form.projectId}
+                disabled={(dialog === "column" && !form.projectId) || (dialog === "job" && !form.columnId)}
                 onClick={submit}
               >
                 Save

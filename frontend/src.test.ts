@@ -235,6 +235,16 @@ describe("jobColumn", () => {
     expect(create).toHaveBeenCalledOnce();
   });
 });
+describe("board job creation", () => {
+  it("keeps column selection conditional on the board-level job flow", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app).toContain('aria-label="create board"');
+    expect(app).toContain('title="create board"');
+    expect(app).toMatch(/chooseColumn: true[\s\S]*setDialog\("job"\)/);
+    expect(app).toMatch(/form\.chooseColumn && \([\s\S]*?>\s*Column\s*<select/);
+    expect(app).toContain('setForm({ columnId: c.id, task: "", doneDefinition: "" })');
+  });
+});
 describe("job comments", () => {
   it("uses a compact accessible reply composer", () => {
     const app = readFileSync("src/App.tsx", "utf8");
