@@ -11,7 +11,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { AsyncButton } from "@/components/AsyncButton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Archive, Pencil, Plus } from "lucide-react";
+import { Archive, Paperclip, Pencil, Plus, Send } from "lucide-react";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
 }
@@ -241,37 +241,50 @@ function JobDetail({
       </div>
       {canComment(j.state) && (
         <div className="commentbox">
-          <label>
-            Reply to session
+          <div className="commentbox-row">
+            <button
+              type="button"
+              className={buttonVariants({ variant: "outline", size: "icon" })}
+              aria-label="Add files"
+              title="Add files"
+            >
+              <Paperclip />
+            </button>
             <textarea
+              aria-label="Reply to session"
               maxLength={4000}
-              placeholder="Type a comment or instruction…"
+              placeholder="Reply to session"
               value={comment}
               onChange={(e) => setComment(e.target.value)}
             />
-          </label>
+            <button
+              type="button"
+              className={buttonVariants({ size: "icon" })}
+              aria-label={sending ? "Sending reply" : "Send reply"}
+              title="Send reply"
+              aria-busy={sending || undefined}
+              disabled={sending || !comment.trim()}
+              onClick={async () => {
+                setSending(true);
+                setCommentError("");
+                try {
+                  await api(`/jobs/${job.id}/comment`, {
+                    method: "POST",
+                    body: JSON.stringify({ comment }),
+                  });
+                  setComment("");
+                  setD(jobDetail(await api("/jobs/" + job.id)));
+                } catch (e) {
+                  setCommentError(String(e));
+                } finally {
+                  setSending(false);
+                }
+              }}
+            >
+              <Send />
+            </button>
+          </div>
           {commentError && <p role="alert">{commentError}</p>}
-          <button
-            disabled={sending || !comment.trim()}
-            onClick={async () => {
-              setSending(true);
-              setCommentError("");
-              try {
-                await api(`/jobs/${job.id}/comment`, {
-                  method: "POST",
-                  body: JSON.stringify({ comment }),
-                });
-                setComment("");
-                setD(jobDetail(await api("/jobs/" + job.id)));
-              } catch (e) {
-                setCommentError(String(e));
-              } finally {
-                setSending(false);
-              }
-            }}
-          >
-            {sending ? "Sending…" : "Send comment"}
-          </button>
         </div>
       )}
       {j.state === "blocked" && (

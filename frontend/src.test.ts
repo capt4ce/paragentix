@@ -187,6 +187,14 @@ describe("jobColumn", () => {
   });
 });
 describe("job comments", () => {
+  it("uses a compact accessible reply composer", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app).toContain('placeholder="Reply to session"');
+    expect(app).toContain('aria-label="Add files"');
+    expect(app).toContain("<Paperclip />");
+    expect(app).toContain("<Send />");
+    expect(app).not.toContain(">Send comment<");
+  });
   it("allows replies only for active sessions", () => {
     expect(canComment("in_progress")).toBe(true);
     expect(canComment("blocked")).toBe(true);
