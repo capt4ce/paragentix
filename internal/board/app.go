@@ -85,6 +85,9 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/columns/", a.auth(http.HandlerFunc(a.columnPath)))
 	m.HandleFunc("GET /api/invitations/{token}", a.invitationPreview)
 	m.Handle("POST /api/invitations/{token}", a.auth(http.HandlerFunc(a.invitationAccept)))
+	m.Handle("GET /api/invitations/active", a.auth(http.HandlerFunc(a.activeInvitation)))
+	m.Handle("GET /api/invitations/id/{id}", a.auth(http.HandlerFunc(a.invitationByID)))
+	m.Handle("POST /api/invitations/id/{id}", a.auth(http.HandlerFunc(a.invitationByID)))
 	sub, _ := fs.Sub(web, "web")
 	files := http.FileServer(http.FS(sub))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

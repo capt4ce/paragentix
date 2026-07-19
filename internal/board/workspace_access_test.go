@@ -148,6 +148,90 @@ func TestInviteRejectsAuthenticatedUsersOwnEmail(t *testing.T) {
 	}
 }
 
+func TestExistingUserInvitationCreatesNotificationAndSupportsAuthorizedModalState(t *testing.T) {
+	a, e := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	a.Mailer = testMailer{}
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner-notify@x.test","password":"password1"}`)
+	_, invited := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"invited@x.test","password":"password1"}`)
+	w, _ := req(t, h, owner, "POST", "/api/workspaces", `{"name":"Notify Team"}`)
+	var workspace map[string]any
+	json.Unmarshal(w.Body.Bytes(), &workspace)
+	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(int64(workspace["id"].(float64)))+"/invitations", `{"email":"invited@x.test"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite=%d %s", w.Code, w.Body.String())
+	}
+	var invitation map[string]any
+	json.Unmarshal(w.Body.Bytes(), &invitation)
+	id := int64(invitation["invitationId"].(float64))
+
+	w, _ = req(t, h, invited, "GET", "/api/notifications", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"kind":"invitation"`) || !strings.Contains(w.Body.String(), `"invitation_id":`+itoa(id)) || !strings.Contains(w.Body.String(), "Notify Team") {
+		t.Fatalf("notifications=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, invited, "GET", "/api/invitations/id/"+itoa(id), "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"pending"`) {
+		t.Fatalf("pending=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, owner, "GET", "/api/invitations/id/"+itoa(id), "")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-account preview=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, invited, "POST", "/api/invitations/id/"+itoa(id), "{}")
+	if w.Code != 200 {
+		t.Fatalf("accept=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, invited, "GET", "/api/invitations/id/"+itoa(id), "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("accepted=%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSignupDiscoversPendingInvitationOnlyOnceAndIgnoresExpired(t *testing.T) {
+	a, e := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	a.Mailer = testMailer{}
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner-first@x.test","password":"password1"}`)
+	w, _ := req(t, h, owner, "POST", "/api/workspaces", `{"name":"First Login Team"}`)
+	var workspace map[string]any
+	json.Unmarshal(w.Body.Bytes(), &workspace)
+	path := "/api/workspaces/" + itoa(int64(workspace["id"].(float64))) + "/invitations"
+	w, _ = req(t, h, owner, "POST", path, `{"email":"new-first@x.test"}`)
+	var active map[string]any
+	json.Unmarshal(w.Body.Bytes(), &active)
+	w, _ = req(t, h, owner, "POST", path, `{"email":"expired-first@x.test"}`)
+	var expired map[string]any
+	json.Unmarshal(w.Body.Bytes(), &expired)
+	a.DB.Exec(`UPDATE workspace_invitations SET expires_at=datetime('now','-1 second') WHERE id=?`, int64(expired["invitationId"].(float64)))
+
+	_, fresh := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"new-first@x.test","password":"password1"}`)
+	w, _ = req(t, h, fresh, "GET", "/api/invitations/active", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"id":`+itoa(int64(active["invitationId"].(float64)))) {
+		t.Fatalf("first active=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, fresh, "GET", "/api/notifications", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"kind":"invitation"`) || !strings.Contains(w.Body.String(), "First Login Team") {
+		t.Fatalf("new user notifications=%d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, fresh, "GET", "/api/invitations/active", "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("second active=%d %s", w.Code, w.Body.String())
+	}
+	w, expiredUser := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"expired-first@x.test","password":"password1"}`)
+	w, _ = req(t, h, expiredUser, "GET", "/api/invitations/active", "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expired active=%d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	root := t.TempDir()
 	a, e := Open(filepath.Join(t.TempDir(), "db"), root)

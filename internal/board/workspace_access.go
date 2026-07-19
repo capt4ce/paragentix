@@ -2,6 +2,7 @@ package board
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -196,13 +198,21 @@ func (a *App) invite(w http.ResponseWriter, r *http.Request, wid int64) {
 		return
 	}
 	raw := token()
+	var invitationID int64
 	tx, e := a.DB.Begin()
 	if e == nil {
 		defer tx.Rollback()
 		_, e = tx.Exec(`DELETE FROM workspace_invitations WHERE workspace_id=? AND email=? AND accepted_at IS NULL AND expires_at<=datetime('now')`, wid, x.Email)
 	}
 	if e == nil {
-		_, e = tx.Exec(`INSERT INTO workspace_invitations(workspace_id,email,token_hash,invited_by,expires_at) VALUES(?,?,?,?,datetime('now','+7 days'))`, wid, x.Email, hash(raw), uid(r))
+		var res sql.Result
+		res, e = tx.Exec(`INSERT INTO workspace_invitations(workspace_id,email,token_hash,invited_by,expires_at,opened_at) VALUES(?,?,?,?,datetime('now','+7 days'),CASE WHEN EXISTS(SELECT 1 FROM users WHERE email=?) THEN CURRENT_TIMESTAMP END)`, wid, x.Email, hash(raw), uid(r), x.Email)
+		if e == nil {
+			invitationID, _ = res.LastInsertId()
+		}
+		if e == nil {
+			_, e = tx.Exec(`INSERT OR IGNORE INTO notifications(user_id,invitation_id,kind,title) SELECT id,?,'invitation','Invited to workspace: '||(SELECT name FROM workspaces WHERE id=?) FROM users WHERE email=?`, invitationID, wid, x.Email)
+		}
 	}
 	if e == nil {
 		e = tx.Commit()
@@ -228,24 +238,83 @@ func (a *App) invite(w http.ResponseWriter, r *http.Request, wid int64) {
 		fail(w, 503, e.Error())
 		return
 	}
-	out := map[string]any{"ok": true}
+	out := map[string]any{"ok": true, "invitationId": invitationID}
 	if a.Mailer != nil {
 		out["token"] = raw
 	}
 	jsonOut(w, 201, out)
 }
 func (a *App) invitationPreview(w http.ResponseWriter, r *http.Request) {
-	var email string
-	if a.DB.QueryRow(`SELECT email FROM workspace_invitations WHERE token_hash=? AND accepted_at IS NULL AND expires_at>datetime('now')`, hash(r.PathValue("token"))).Scan(&email) != nil {
+	var id int64
+	var email, workspace, status string
+	if a.DB.QueryRow(`SELECT i.id,i.email,w.name,CASE WHEN i.accepted_at IS NULL THEN 'pending' ELSE 'accepted' END FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id WHERE i.token_hash=? AND (i.accepted_at IS NOT NULL OR i.expires_at>datetime('now'))`, hash(r.PathValue("token"))).Scan(&id, &email, &workspace, &status) != nil {
 		fail(w, 404, "invitation unavailable")
 		return
 	}
-	jsonOut(w, 200, map[string]any{"email": email})
+	jsonOut(w, 200, map[string]any{"id": id, "email": email, "workspaceName": workspace, "status": status})
+}
+
+func (a *App) invitationByID(w http.ResponseWriter, r *http.Request) {
+	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if e != nil {
+		fail(w, 404, "invitation unavailable")
+		return
+	}
+	if r.Method == http.MethodPost {
+		a.acceptInvitation(w, r, "id", id)
+		return
+	}
+	var email, workspace, status string
+	e = a.DB.QueryRow(`SELECT i.email,w.name,CASE WHEN i.accepted_at IS NULL THEN 'pending' ELSE 'accepted' END FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id JOIN users u ON u.email=i.email WHERE i.id=? AND u.id=? AND (i.accepted_at IS NOT NULL OR i.expires_at>datetime('now'))`, id, uid(r)).Scan(&email, &workspace, &status)
+	if e != nil {
+		fail(w, 403, "invitation unavailable for this account")
+		return
+	}
+	jsonOut(w, 200, map[string]any{"id": id, "email": email, "workspaceName": workspace, "status": status})
+}
+
+func (a *App) activeInvitation(w http.ResponseWriter, r *http.Request) {
+	tx, e := a.DB.Begin()
+	if e != nil {
+		fail(w, 500, "could not load invitation")
+		return
+	}
+	defer tx.Rollback()
+	var id int64
+	var email, workspace string
+	e = tx.QueryRow(`SELECT i.id,i.email,w.name FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id JOIN users u ON u.email=i.email WHERE u.id=? AND i.accepted_at IS NULL AND i.opened_at IS NULL AND i.expires_at>datetime('now') ORDER BY i.id LIMIT 1`, uid(r)).Scan(&id, &email, &workspace)
+	if e != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	res, e := tx.Exec(`UPDATE workspace_invitations SET opened_at=CURRENT_TIMESTAMP WHERE id=? AND opened_at IS NULL`, id)
+	if e != nil {
+		fail(w, 500, "could not load invitation")
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 500, "could not load invitation")
+		return
+	}
+	jsonOut(w, 200, map[string]any{"id": id, "email": email, "workspaceName": workspace, "status": "pending"})
 }
 func (a *App) invitationAccept(w http.ResponseWriter, r *http.Request) {
+	a.acceptInvitation(w, r, "token", 0)
+}
+func (a *App) acceptInvitation(w http.ResponseWriter, r *http.Request, lookup string, invitationID int64) {
 	var id, wid int64
 	var email, me string
-	e := a.DB.QueryRow(`SELECT id,workspace_id,email FROM workspace_invitations WHERE token_hash=? AND accepted_at IS NULL AND expires_at>datetime('now')`, hash(r.PathValue("token"))).Scan(&id, &wid, &email)
+	var e error
+	if lookup == "id" {
+		e = a.DB.QueryRow(`SELECT id,workspace_id,email FROM workspace_invitations WHERE id=? AND accepted_at IS NULL AND expires_at>datetime('now')`, invitationID).Scan(&id, &wid, &email)
+	} else {
+		e = a.DB.QueryRow(`SELECT id,workspace_id,email FROM workspace_invitations WHERE token_hash=? AND accepted_at IS NULL AND expires_at>datetime('now')`, hash(r.PathValue("token"))).Scan(&id, &wid, &email)
+	}
 	a.DB.QueryRow(`SELECT email FROM users WHERE id=?`, uid(r)).Scan(&me)
 	if e != nil || email != me {
 		fail(w, 403, "invitation unavailable for this account")

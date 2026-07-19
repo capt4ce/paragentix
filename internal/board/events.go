@@ -20,20 +20,24 @@ func (a *App) notifications(w http.ResponseWriter, r *http.Request) {
 	if before == 0 {
 		before = 1 << 62
 	}
-	rows, _ := a.DB.Query(`SELECT id,job_id,kind,title,read,created_at FROM notifications WHERE user_id=? AND id<? ORDER BY id DESC LIMIT ?`, uid(r), before, limit+1)
+	rows, _ := a.DB.Query(`SELECT id,job_id,invitation_id,kind,title,read,created_at FROM notifications WHERE user_id=? AND id<? ORDER BY id DESC LIMIT ?`, uid(r), before, limit+1)
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
 		var id int64
-		var job sql.NullInt64
+		var job, invitation sql.NullInt64
 		var kind, title, created string
 		var read bool
-		rows.Scan(&id, &job, &kind, &title, &read, &created)
+		rows.Scan(&id, &job, &invitation, &kind, &title, &read, &created)
 		var jobID any
 		if job.Valid {
 			jobID = job.Int64
 		}
-		out = append(out, map[string]any{"id": id, "job_id": jobID, "kind": kind, "title": title, "read": read, "created_at": created})
+		var invitationID any
+		if invitation.Valid {
+			invitationID = invitation.Int64
+		}
+		out = append(out, map[string]any{"id": id, "job_id": jobID, "invitation_id": invitationID, "kind": kind, "title": title, "read": read, "created_at": created})
 	}
 	hasMore := len(out) > limit
 	if hasMore {

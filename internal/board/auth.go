@@ -53,6 +53,9 @@ func (a *App) signup(w http.ResponseWriter, r *http.Request) {
 	tx.Exec("INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,'Default Project',?)", id, wid, a.Workspace)
 	tx.Exec("INSERT INTO boards(user_id,workspace_id,name) VALUES(?,?,'Default Board')", id, wid)
 	tx.Exec("INSERT INTO lanes(user_id,name,position) VALUES(?,'Lane 1',0)", id)
+	tx.Exec(`INSERT OR IGNORE INTO notifications(user_id,invitation_id,kind,title)
+		SELECT ?,i.id,'invitation','Invited to workspace: '||w.name FROM workspace_invitations i JOIN workspaces w ON w.id=i.workspace_id
+		WHERE i.email=? AND i.accepted_at IS NULL AND i.expires_at>datetime('now')`, id, x.Email)
 	tx.Commit()
 	a.newSession(w, id)
 	jsonOut(w, 201, map[string]any{"id": id, "email": x.Email})

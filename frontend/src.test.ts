@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory, WorkspaceUserStatus } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -159,6 +159,23 @@ describe("notification center", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+});
+describe("workspace invitation modal", () => {
+  it("offers acceptance for a pending invitation", () => {
+    const { getByRole } = render(createElement(InvitationDialog, { invitation: { id: 7, workspaceName: "Team", status: "pending" }, close: vi.fn(), accept: vi.fn() }));
+    const action = getByRole("button", { name: "Accept invitation" }) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+  });
+  it("shows the exact disabled accepted state", () => {
+    const { getByRole } = render(createElement(InvitationDialog, { invitation: { id: 7, workspaceName: "Team", status: "accepted" }, close: vi.fn(), accept: vi.fn() }));
+    const action = getByRole("button", { name: "Already accepted" }) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.textContent).toBe("Already accepted");
+  });
+  it("keeps matching sessions and logs out mismatched sessions", () => {
+    expect(invitationSessionAction(" User@Example.com ", "user@example.com")).toBe("show");
+    expect(invitationSessionAction("other@example.com", "user@example.com")).toBe("logout");
   });
 });
 describe("api", () => {

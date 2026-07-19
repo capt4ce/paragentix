@@ -76,6 +76,15 @@ export const filterProjectJobs = (jobs: any[], status: string, search: string) =
 export function WorkspaceUserStatus({ status }: { status: "invited" | "member" }) {
   return <Badge className={status === "invited" ? "border-yellow-600 bg-yellow-100 text-yellow-800" : "border-green-600 bg-green-100 text-green-800"}>{status === "invited" ? "Invited" : "Member"}</Badge>;
 }
+export const invitationSessionAction = (sessionEmail: string, invitationEmail: string) =>
+  sessionEmail.trim().toLowerCase() === invitationEmail.trim().toLowerCase() ? "show" : "logout";
+export function InvitationDialog({ invitation, close, accept }: { invitation: any; close: () => void; accept: () => Promise<void> | void }) {
+  const accepted = invitation.status === "accepted";
+  return <DialogShell title="Workspace invitation" close={close}>
+    <p>You were invited to {invitation.workspaceName}.</p>
+    <AsyncButton disabled={accepted} onClick={accept}>{accepted ? "Already accepted" : "Accept invitation"}</AsyncButton>
+  </DialogShell>;
+}
 export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[] }): RequestInit {
   if (form.files?.length) {
     const body = new FormData();
@@ -356,7 +365,8 @@ export function App() {
     [jobStatus, setJobStatus] = useState("all"),
     [jobSearch, setJobSearch] = useState(""),
     [loadingTab, setLoadingTab] = useState(""),
-    [job, setJob] = useState<any>();
+    [job, setJob] = useState<any>(),
+    [invitation, setInvitation] = useState<any>();
   const menu = useRef<HTMLDetailsElement>(null);
   useJobDetailHistory(!!job, () => setJob(undefined));
   const load = async () => {
@@ -404,12 +414,19 @@ export function App() {
           await load();
           const route = parseLocation(location.search);
           if (route.view === "invitation") {
-            await api(`/invitations/${encodeURIComponent(route.token!)}`, {
-              method: "POST",
-            });
-            history.replaceState({}, "", "?workspaces=1");
-            setView("workspaces");
-          } else await restore();
+            const pending = await api(`/invitations/${encodeURIComponent(route.token!)}`);
+            if (invitationSessionAction(x.email, pending.email) === "logout") {
+              await api("/auth/logout", { method: "POST" });
+              location.reload();
+              return;
+            }
+            setInvitation({ ...pending, token: route.token });
+            await restore();
+          } else {
+            await restore();
+            const pending = await api("/invitations/active");
+            if (pending) setInvitation(pending);
+          }
         } catch (e) {
           setError(String(e));
         }
@@ -550,6 +567,7 @@ export function App() {
     );
     setUnread(Math.max(0, unread - Number(!n.read)));
     if (n.job_id) setJob(jobDetail(await api(`/jobs/${n.job_id}`)));
+    if (n.invitation_id) setInvitation(await api(`/invitations/id/${n.invitation_id}`));
   };
   return (
     <>
@@ -1148,6 +1166,12 @@ export function App() {
           refresh={async () => setJob(jobDetail(await api(`/jobs/${job.id}`)))}
         />
       )}
+      {invitation && <InvitationDialog invitation={invitation} close={() => setInvitation(undefined)} accept={async () => {
+        const path = invitation.token ? `/invitations/${encodeURIComponent(invitation.token)}` : `/invitations/id/${invitation.id}`;
+        await api(path, { method: "POST" });
+        setInvitation({ ...invitation, status: "accepted" });
+        await load();
+      }} />}
     </>
   );
 }
