@@ -161,7 +161,18 @@ func (a *App) invite(w http.ResponseWriter, r *http.Request, wid int64) {
 		fail(w, 409, "active invitation exists")
 		return
 	}
-	inviteURL := strings.TrimRight(a.BaseURL, "/") + "/?invite=" + url.QueryEscape(raw)
+	baseURL := a.BaseURL
+	if baseURL == "" {
+		scheme := "http"
+		forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+		if strings.EqualFold(forwardedProto, "http") || strings.EqualFold(forwardedProto, "https") {
+			scheme = strings.ToLower(forwardedProto)
+		} else if r.TLS != nil {
+			scheme = "https"
+		}
+		baseURL = scheme + "://" + r.Host
+	}
+	inviteURL := strings.TrimRight(baseURL, "/") + "/?invite=" + url.QueryEscape(raw)
 	if e = a.mailer().Send(x.Email, "Workspace invitation", inviteURL); e != nil {
 		a.DB.Exec(`DELETE FROM workspace_invitations WHERE token_hash=?`, hash(raw))
 		fail(w, 503, e.Error())

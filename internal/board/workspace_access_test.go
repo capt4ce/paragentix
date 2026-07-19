@@ -3,6 +3,7 @@ package board
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,33 @@ func (m testMailer) Send(_, _, body string) error {
 		*m.body = body
 	}
 	return nil
+}
+
+func TestInvitationURLUsesRequestOriginByDefault(t *testing.T) {
+	a, e := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	var body string
+	a.Mailer = testMailer{&body}
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner@x.test","password":"password1"}`)
+	w, _ := req(t, h, owner, "POST", "/api/workspaces", `{"name":"Team"}`)
+	var workspace map[string]any
+	json.Unmarshal(w.Body.Bytes(), &workspace)
+
+	r := httptest.NewRequest("POST", "http://app.example.test/api/workspaces/"+itoa(int64(workspace["id"].(float64)))+"/invitations", strings.NewReader(`{"email":"new@x.test"}`))
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if r.TLS != nil {
+		t.Fatal("reverse-proxy request unexpectedly has TLS state")
+	}
+	r.AddCookie(owner)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || !strings.HasPrefix(body, "https://app.example.test/?invite=") {
+		t.Fatalf("invite=%d url=%q", w.Code, body)
+	}
 }
 
 func TestInvitationURLAndReinviteAfterExpiry(t *testing.T) {
