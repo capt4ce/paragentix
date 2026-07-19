@@ -2,17 +2,11 @@ package board
 
 import (
 	"database/sql"
-	"embed"
-	"io/fs"
 	"net/http"
-	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
 )
-
-//go:embed web/*
-var web embed.FS
 
 type App struct {
 	DB        *sql.DB
@@ -88,17 +82,6 @@ func (a *App) Handler() http.Handler {
 	m.Handle("GET /api/invitations/active", a.auth(http.HandlerFunc(a.activeInvitation)))
 	m.Handle("GET /api/invitations/id/{id}", a.auth(http.HandlerFunc(a.invitationByID)))
 	m.Handle("POST /api/invitations/id/{id}", a.auth(http.HandlerFunc(a.invitationByID)))
-	sub, _ := fs.Sub(web, "web")
-	files := http.FileServer(http.FS(sub))
-	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			fail(w, 404, "not found")
-			return
-		}
-		if _, e := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); e != nil {
-			r.URL.Path = "/"
-		}
-		files.ServeHTTP(w, r)
-	})
+	m.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, 404, "not found") })
 	return security(m)
 }
