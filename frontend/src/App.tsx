@@ -902,7 +902,6 @@ export function App() {
                 className={buttonVariants({ variant: "outline", size: "icon" })}
                 aria-label="Add column"
                 title="Add column"
-                loadingLabel="…"
                 onClick={async () => {
                   const projects = await api(
                     `/workspaces/${board.workspaceId}/projects`,
@@ -928,7 +927,6 @@ export function App() {
                     <AsyncButton
                       aria-label={`Edit ${c.name}`}
                       title="Edit column"
-                      loadingLabel="…"
                       onClick={async () => {
                         setForm({
                           ...c,
@@ -945,7 +943,6 @@ export function App() {
                       className="danger"
                       aria-label={`Archive ${c.name}`}
                       title="Archive column"
-                      loadingLabel="…"
                       onClick={async () => {
                         await archiveColumn(c.id);
                         await load();

@@ -29,7 +29,9 @@ describe("async button", () => {
     fireEvent.click(button);
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(button.textContent).toBe("Loading…");
+    expect(button.getAttribute("aria-label")).toBe("Save");
+    expect(button.textContent).toBe("");
+    expect(button.querySelector("svg")?.classList.contains("animate-spin")).toBe(true);
     fireEvent.click(button);
     expect(action).toHaveBeenCalledOnce();
 
