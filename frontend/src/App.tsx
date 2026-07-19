@@ -60,6 +60,7 @@ export const canComment = (state: string) =>
   state === "in_progress" || state === "blocked" || state === "done";
 export const jobDetail = (x: any) => ({ ...x.job, events: x.events });
 export const columnPatch = (form: any) => ({
+  name: form.name,
   projectId: Number(form.projectId),
 });
 export const columnAnchor = (id: number) => `column-${id}`;

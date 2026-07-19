@@ -44,7 +44,7 @@ describe("project navigation and jobs", () => {
   });
 });
 describe("column edit", () => {
-  it("patches only the project while preserving worktree state", () => expect(columnPatch({projectId:"9",worktreeEnabled:true,worktreeName:"feature-x"})).toEqual({projectId:9}));
+  it("patches the edited name and project while preserving worktree state", () => expect(columnPatch({name:"Review",projectId:"9",worktreeEnabled:true,worktreeName:"feature-x"})).toEqual({name:"Review",projectId:9}));
   it("links navigation to a column", () => expect(columnAnchor(7)).toBe("column-7"));
 });
 describe("account menu", () => {

@@ -161,9 +161,13 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"projectName":"App"`) {
 		t.Fatalf("member columns %d %s", w.Code, w.Body.String())
 	}
-	w, _ = req(t, h, member, "PATCH", "/api/columns/"+itoa(cid), `{"projectId":`+itoa(pid)+`}`)
+	w, _ = req(t, h, member, "PATCH", "/api/columns/"+itoa(cid), `{"name":"Review","projectId":`+itoa(pid)+`}`)
 	if w.Code != 200 {
 		t.Fatalf("member column patch %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, member, "GET", "/api/boards/"+itoa(bid)+"/columns", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"Review"`) {
+		t.Fatalf("column patch did not persist name: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, owner, "PATCH", "/api/projects/"+itoa(pid), `{"name":"Renamed","directory":"`+root+`"}`)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "Renamed") {
