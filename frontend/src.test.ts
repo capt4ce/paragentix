@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -191,6 +191,28 @@ describe("toast feedback", () => {
   });
 });
 describe("workspace invitation modal", () => {
+  it("closes and navigates home after accepting an invitation", async () => {
+    history.replaceState({}, "", "/?invite=token");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), location.origin).pathname;
+      const body = path.endsWith("/auth/me")
+        ? { id: 2, email: "member@example.com" }
+        : path.endsWith("/invitations/token")
+          ? init?.method === "POST" ? { ok: true } : { id: 7, email: "member@example.com", workspaceName: "Team", status: "pending" }
+          : path.endsWith("/notifications")
+            ? { notifications: [], has_more: false, unread: 0 }
+            : [];
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    const screen = render(createElement(App));
+    fireEvent.click(await screen.findByRole("button", { name: "Accept invitation" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Workspace invitation" })).toBeNull());
+    expect(location.pathname + location.search).toBe("/");
+    screen.unmount();
+    vi.unstubAllGlobals();
+  });
   it("offers acceptance for a pending invitation", () => {
     const { getByRole } = render(createElement(InvitationDialog, { invitation: { id: 7, workspaceName: "Team", status: "pending" }, close: vi.fn(), accept: vi.fn() }));
     const action = getByRole("button", { name: "Accept invitation" }) as HTMLButtonElement;

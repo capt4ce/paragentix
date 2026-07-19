@@ -1320,7 +1320,9 @@ export function App() {
       {invitation && <InvitationDialog invitation={invitation} close={() => setInvitation(undefined)} accept={async () => {
         const path = invitation.token ? `/invitations/${encodeURIComponent(invitation.token)}` : `/invitations/id/${invitation.id}`;
         await api(path, { method: "POST" });
-        setInvitation({ ...invitation, status: "accepted" });
+        setInvitation(undefined);
+        setView("board");
+        history.pushState({}, "", base);
         await load();
       }} />}
       <Toast toast={toast} />
