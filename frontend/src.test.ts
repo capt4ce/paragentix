@@ -132,7 +132,7 @@ describe("mobile board controls", () => {
   it("makes mobile dialogs fit and scroll inside the visual viewport", () => {
     const baseModal = css.match(/\.modal\{([^}]*)\}/)?.[1] ?? "";
     expect(baseModal).not.toContain("position:relative");
-    expect(css).toMatch(/@media\(max-width:600px\)[\s\S]*?\.modal\{[^}]*left:\.5rem[^}]*right:\.5rem[^}]*transform:none[^}]*overflow-y:auto/);
+    expect(css).toMatch(/@media\(max-width:600px\)[\s\S]*?\.modal\{[^}]*left:\.5rem[^}]*right:\.5rem[^}]*--tw-translate-x:0[^}]*--tw-translate-y:0[^}]*transform:none[^}]*overflow-y:auto/);
   });
   it("renders an add-job control in every column", () => {
     expect(app).toContain('className="add"');
