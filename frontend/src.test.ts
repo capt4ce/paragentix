@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation, DialogShell } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -118,6 +118,15 @@ describe("job actions", () => {
     (state) =>
       expect(jobActionsVisible(state)).toEqual({ retry: true, archive: true }),
   );
+  it("archives from the card without opening it", () => {
+    const open = vi.fn(), archive = vi.fn(async () => {});
+    const { getByLabelText } = render(createElement(JobCard, { job: { task: "Ship it", state: "done" }, open, archive }));
+    const button = getByLabelText("Archive Ship it");
+    expect(button.getAttribute("title")).toBe("Archive job");
+    fireEvent.click(button);
+    expect(open).not.toHaveBeenCalled();
+    expect(archive).toHaveBeenCalledOnce();
+  });
 });
 describe("chat conversations", () => {
   it("places user input on the right and provider output on the left", () => {
