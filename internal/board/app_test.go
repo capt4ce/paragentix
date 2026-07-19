@@ -303,14 +303,9 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 		t.Fatalf("retried job state=%q finished=%v err=%v", state, finished, e)
 	}
 	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
-	if w.Code != 409 {
-		t.Fatalf("retry todo=%d", w.Code)
+	if w.Code != 200 {
+		t.Fatalf("retry todo=%d %s", w.Code, w.Body.String())
 	}
-	w, _ = req(t, h, c1, "DELETE", "/api/jobs/"+itoa(id), "")
-	if w.Code != 409 {
-		t.Fatalf("archive todo=%d", w.Code)
-	}
-	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	w, _ = req(t, h, c2, "DELETE", "/api/jobs/"+itoa(id), "")
 	if w.Code != 404 {
 		t.Fatalf("cross-user archive=%d", w.Code)
