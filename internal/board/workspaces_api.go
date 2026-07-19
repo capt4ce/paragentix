@@ -72,7 +72,7 @@ func (a *App) workspacePath(w http.ResponseWriter, r *http.Request) {
 		switch parts[1] {
 		case "projects":
 			a.workspaceProjects(w, r, id)
-		case "members":
+		case "members", "users":
 			var mid int64
 			if len(parts) > 2 {
 				mid, _ = strconv.ParseInt(parts[2], 10, 64)

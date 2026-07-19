@@ -363,6 +363,55 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 }
 
+func TestWorkspaceUsersIncludesPendingInvitationsAndMembers(t *testing.T) {
+	root := t.TempDir()
+	a, err := Open(filepath.Join(t.TempDir(), "db"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.Mailer = testMailer{}
+	h := a.Handler()
+
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner-users@x.test","password":"password1"}`)
+	w, _ := req(t, h, owner, "POST", "/api/workspaces", `{"name":"Users Team"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("workspace %d %s", w.Code, w.Body.String())
+	}
+	var workspace map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &workspace); err != nil {
+		t.Fatal(err)
+	}
+	wid := int64(workspace["id"].(float64))
+
+	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(wid)+"/invitations", `{"email":"pending-users@x.test"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite %d %s", w.Code, w.Body.String())
+	}
+
+	w, _ = req(t, h, owner, "GET", "/api/workspaces/"+itoa(wid)+"/users", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("users %d %s", w.Code, w.Body.String())
+	}
+	var users []struct {
+		Email  string `json:"email"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &users); err != nil {
+		t.Fatal(err)
+	}
+	statuses := map[string]string{}
+	for _, user := range users {
+		statuses[user.Email] = user.Status
+	}
+	if statuses["owner-users@x.test"] != "member" {
+		t.Fatalf("owner status = %q, users = %s", statuses["owner-users@x.test"], w.Body.String())
+	}
+	if statuses["pending-users@x.test"] != "invited" {
+		t.Fatalf("pending status = %q, users = %s", statuses["pending-users@x.test"], w.Body.String())
+	}
+}
+
 func TestMigrationCreatesDefaultProjectIdempotently(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "db")
 	root := t.TempDir()
