@@ -125,6 +125,9 @@ describe("notification paging", () => {
 describe("mobile board controls", () => {
   const app = readFileSync("src/App.tsx", "utf8");
   const css = readFileSync("src/index.css", "utf8");
+  it("keeps the job inspector anchored on screen", () => {
+    expect(css).toMatch(/\.inspector\{[^}]*--tw-translate-x:0[^}]*--tw-translate-y:0[^}]*transform:none/);
+  });
   it("keeps dropdown positioning owned by Radix", () => {
     const rule = css.match(/\.notificationmenu\{([^}]*)\}/)?.[1] ?? "";
     expect(rule).not.toMatch(/position:absolute|right:0|top:/);
