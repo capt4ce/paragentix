@@ -70,6 +70,10 @@ func (a *App) workspaceProjects(w http.ResponseWriter, r *http.Request, wid int6
 		fail(w, 400, e.Error())
 		return
 	}
+	if existing := a.projectDirectoryConflict(wid, d); existing != "" {
+		fail(w, http.StatusConflict, "directory is already used by "+existing)
+		return
+	}
 	res, e := a.DB.Exec(`INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,?,?)`, uid(r), wid, strings.TrimSpace(x.Name), d)
 	if e != nil {
 		fail(w, 409, "project unavailable")

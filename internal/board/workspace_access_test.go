@@ -104,6 +104,10 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &x)
 	pid := int64(x["id"].(float64))
+	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(wid)+"/projects", `{"name":"Duplicate","directory":"app"}`)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "directory is already used by App") {
+		t.Fatalf("duplicate project directory %d %s", w.Code, w.Body.String())
+	}
 	w, _ = req(t, h, owner, "POST", "/api/boards", `{"name":"Board","workspaceId":`+itoa(wid)+`}`)
 	json.Unmarshal(w.Body.Bytes(), &x)
 	bid := int64(x["id"].(float64))

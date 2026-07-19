@@ -51,6 +51,11 @@ func (a *App) workspaceRoot() string {
 	}
 	return a.Workspace
 }
+func (a *App) projectDirectoryConflict(workspaceID int64, directory string) string {
+	var name string
+	_ = a.DB.QueryRow(`SELECT name FROM projects WHERE workspace_id=? AND directory=?`, workspaceID, directory).Scan(&name)
+	return name
+}
 func (a *App) projects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		fail(w, 405, "method not allowed")
@@ -91,6 +96,10 @@ func (a *App) projects(w http.ResponseWriter, r *http.Request) {
 	d, _, e := canonicalDir(a.workspaceRoot(), directory)
 	if e != nil {
 		fail(w, 400, e.Error())
+		return
+	}
+	if existing := a.projectDirectoryConflict(x.WorkspaceID, d); existing != "" {
+		fail(w, http.StatusConflict, "directory is already used by "+existing)
 		return
 	}
 	res, e := a.DB.Exec(`INSERT INTO projects(user_id,workspace_id,name,directory) VALUES(?,?,?,?)`, uid(r), x.WorkspaceID, strings.TrimSpace(x.Name), d)
