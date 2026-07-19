@@ -2,6 +2,7 @@ package board
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -137,6 +138,46 @@ func (a *App) startHermes(id int64, prompt string) {
 		return
 	}
 	tx.Commit()
+	a.runHermesJob(id, run, sessionID, prompt)
+}
+
+func (a *App) retryHermes(id int64, state string) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var run int64
+	var session string
+	if err = tx.QueryRow("SELECT id,tmux_session FROM job_runs WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1", id).Scan(&run, &session); err != nil {
+		return err
+	}
+	session = strings.TrimPrefix(session, "hermes-api:")
+	if session == "" {
+		return sql.ErrNoRows
+	}
+	if _, err = tx.Exec("UPDATE jobs SET state='in_progress',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?", run); err != nil {
+		return err
+	}
+	if state != "in_progress" {
+		if err = appendJobEventTx(tx, id, "status", statusContent(state, "in_progress")); err != nil {
+			return err
+		}
+	}
+	if err = appendJobEventTx(tx, id, "retry", "Job retried"); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	a.runHermesJob(id, run, session, "retry")
+	return nil
+}
+
+func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
 	go func() {
 		var user int64
 		a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", id).Scan(&user)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func req(t *testing.T, h http.Handler, c *http.Cookie, method, path, body string) (*httptest.ResponseRecorder, *http.Cookie) {
@@ -115,6 +116,88 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 	got, err := a.runHermesSession(context.Background(), userID, "Reply OK", "session-123")
 	if err != nil || got != "OK" {
 		t.Fatalf("runHermes: got %q, err %v", got, err)
+	}
+}
+
+func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
+	requestSeen := make(chan struct{}, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Hermes-Session-Id"); got != "latest-session" {
+			t.Errorf("session header=%q, want latest-session", got)
+		}
+		var body struct {
+			Messages []struct {
+				Role, Content string
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Messages) != 1 || body.Messages[0].Role != "user" || body.Messages[0].Content != "retry" {
+			t.Errorf("retry request body=%+v err=%v", body, err)
+		}
+		requestSeen <- struct{}{}
+		w.Write([]byte(`{"choices":[{"message":{"content":"retried"}}]}`))
+	}))
+	defer ts.Close()
+
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"retry@example.com","password":"password1"}`)
+	var user, lane int64
+	a.DB.QueryRow("SELECT id FROM users WHERE email='retry@example.com'").Scan(&user)
+	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
+	a.DB.Exec("UPDATE user_settings SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user)
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position,attempt_count,finished_at) VALUES(?,?,'work','done',0,1,CURRENT_TIMESTAMP)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:older-session','done',CURRENT_TIMESTAMP)", job)
+	res, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:latest-session','done',CURRENT_TIMESTAMP)", job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := res.LastInsertId()
+
+	w, _ := req(t, h, cookie, "POST", "/api/jobs/"+itoa(job)+"/retry", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("retry=%d %s", w.Code, w.Body.String())
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hermes retry request not received")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var state string
+		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state)
+		if state == "done" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job state=%q, want done", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var attempts, runs int
+	a.DB.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", job).Scan(&attempts)
+	a.DB.QueryRow("SELECT count(*) FROM job_runs WHERE job_id=?", job).Scan(&runs)
+	if attempts != 1 || runs != 2 {
+		t.Fatalf("attempts=%d runs=%d, want unchanged 1 and 2", attempts, runs)
+	}
+	var status, summary string
+	a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE id=?", run).Scan(&status, &summary)
+	if status != "done" || summary != "retried" {
+		t.Fatalf("latest run status=%q summary=%q", status, summary)
+	}
+	var retryEvents int
+	a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='retry'", run).Scan(&retryEvents)
+	if retryEvents != 1 {
+		t.Fatalf("retry events on reused run=%d", retryEvents)
 	}
 }
 
@@ -409,22 +492,18 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 		t.Fatalf("done edit=%d", w.Code)
 	}
 	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
-	if w.Code != 200 {
-		t.Fatalf("retry done=%d %s", w.Code, w.Body.String())
+	if w.Code != 409 {
+		t.Fatalf("retry without Hermes session=%d %s", w.Code, w.Body.String())
 	}
 	var state string
 	var finished any
-	if e := a.DB.QueryRow("SELECT state,finished_at FROM jobs WHERE id=?", id).Scan(&state, &finished); e != nil || state != "todo" || finished != nil {
-		t.Fatalf("retried job state=%q finished=%v err=%v", state, finished, e)
+	if e := a.DB.QueryRow("SELECT state,finished_at FROM jobs WHERE id=?", id).Scan(&state, &finished); e != nil || state != "done" || finished == nil {
+		t.Fatalf("rejected retry changed job state=%q finished=%v err=%v", state, finished, e)
 	}
 	var retryEvents int
-	a.DB.QueryRow(`SELECT count(*) FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? AND ((e.kind='status' AND e.content LIKE '%done%todo%') OR e.kind='retry')`, id).Scan(&retryEvents)
-	if retryEvents != 2 {
-		t.Fatalf("retry timeline events=%d, want status and retry", retryEvents)
-	}
-	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
-	if w.Code != 200 {
-		t.Fatalf("retry todo=%d %s", w.Code, w.Body.String())
+	a.DB.QueryRow(`SELECT count(*) FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? AND e.kind='retry'`, id).Scan(&retryEvents)
+	if retryEvents != 0 {
+		t.Fatalf("rejected retry timeline events=%d", retryEvents)
 	}
 	w, _ = req(t, h, c2, "DELETE", "/api/jobs/"+itoa(id), "")
 	if w.Code != 404 {

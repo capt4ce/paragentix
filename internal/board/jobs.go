@@ -316,12 +316,13 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		a.appendJobEvent(id, "status", statusContent(state, "todo"))
 		exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
 	} else if act == "retry" {
-		exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
-		a.DB.Exec("UPDATE jobs SET state='todo',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
-		if state != "todo" {
-			a.appendJobEvent(id, "status", statusContent(state, "todo"))
+		if e := a.retryHermes(id, state); e == sql.ErrNoRows {
+			fail(w, 409, "reusable Hermes session not found")
+			return
+		} else if e != nil {
+			fail(w, 500, "could not retry job")
+			return
 		}
-		a.appendJobEvent(id, "retry", "Job retried")
 	} else {
 		if state != "blocked" {
 			fail(w, 409, "job is not blocked")
@@ -345,5 +346,7 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		a.appendJobEvent(id, "status", statusContent(state, "todo"))
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
-	a.signal()
+	if act != "retry" {
+		a.signal()
+	}
 }
