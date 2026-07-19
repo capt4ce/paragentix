@@ -483,6 +483,53 @@ func TestNotificationsArePaginatedAndOwnerScoped(t *testing.T) {
 	}
 }
 
+func TestJobCompletionNotifiesOnlyCreator(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, creator := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"creator-notify@example.com","password":"password1"}`)
+	_, other := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"other-completion@example.com","password":"password1"}`)
+
+	var creatorID, laneID int64
+	if err = a.DB.QueryRow(`SELECT u.id,l.id FROM users u JOIN lanes l ON l.user_id=u.id WHERE u.email=?`, "creator-notify@example.com").Scan(&creatorID, &laneID); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES(?,?,'private work','done',0)", creatorID, laneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, _ := res.LastInsertId()
+	res, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'finished','done')", jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := res.LastInsertId()
+
+	a.notify(jobID, runID, "done")
+
+	for name, tc := range map[string]struct {
+		cookie *http.Cookie
+		want   int
+	}{
+		"creator":    {creator, 1},
+		"other user": {other, 0},
+	} {
+		w, _ := req(t, h, tc.cookie, "GET", "/api/notifications", "")
+		var page struct {
+			Notifications []map[string]any `json:"notifications"`
+		}
+		if err = json.Unmarshal(w.Body.Bytes(), &page); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("%s notifications: %d %s", name, w.Code, w.Body.String())
+		}
+		if got := len(page.Notifications); got != tc.want {
+			t.Fatalf("%s received %d completion notifications, want %d", name, got, tc.want)
+		}
+	}
+}
+
 func TestObsoleteColumnMigration(t *testing.T) {
 	var err error
 	db := filepath.Join(t.TempDir(), "existing.db")
