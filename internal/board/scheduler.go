@@ -92,8 +92,8 @@ func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (strin
 }
 
 func (a *App) start(id int64, task, done, root string) {
-	var effective string
-	if err := a.DB.QueryRow(`SELECT CASE WHEN c.worktree_enabled=1 THEN c.worktree_path ELSE p.directory END FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id WHERE j.id=?`, id).Scan(&effective); err != nil || effective == "" {
+	var effective, projectName, projectDirectory string
+	if err := a.DB.QueryRow(`SELECT CASE WHEN c.worktree_enabled=1 THEN c.worktree_path ELSE p.directory END,p.name,p.directory FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id WHERE j.id=?`, id).Scan(&effective, &projectName, &projectDirectory); err != nil || effective == "" {
 		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected project or worktree is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 		return
 	}
@@ -102,7 +102,11 @@ func (a *App) start(id int64, task, done, root string) {
 		return
 	}
 	root = validated
-	a.startHermes(id, task+"\n\nDone definition:\n"+done)
+	a.startHermes(id, initialHermesPrompt(projectName, projectDirectory, task, done))
+}
+
+func initialHermesPrompt(projectName, projectDirectory, task, done string) string {
+	return fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, task, done)
 }
 func (a *App) startHermes(id int64, prompt string) {
 	tx, _ := a.DB.Begin()

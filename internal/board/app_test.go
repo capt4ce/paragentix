@@ -115,6 +115,14 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 	}
 }
 
+func TestInitialHermesPromptIncludesColumnProject(t *testing.T) {
+	prompt := initialHermesPrompt("Paragentix", "/srv/projects/paragentix", "Fix the scheduler", "Tests pass")
+	want := "Unless otherwise specified, this conversation concerns the project Paragentix, located at /srv/projects/paragentix. Use this project as the default when creating or modifying jobs.\n\nFix the scheduler\n\nDone definition:\nTests pass"
+	if prompt != want {
+		t.Fatalf("prompt = %q, want %q", prompt, want)
+	}
+}
+
 func TestSettingsRequireAuthentication(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
