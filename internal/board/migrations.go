@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY,user_id INTEGER NOT NU
 		e = a.migrateCardinality()
 	}
 	if e == nil {
+		var workspaceHermes int
+		a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('workspaces') WHERE name='hermes_url'`).Scan(&workspaceHermes)
+		if workspaceHermes == 0 {
+			if _, e = a.DB.Exec(`ALTER TABLE workspaces ADD COLUMN hermes_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE workspaces ADD COLUMN hermes_api_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE workspaces ADD COLUMN hermes_model TEXT NOT NULL DEFAULT 'hermes-agent';
+UPDATE workspaces SET hermes_url=COALESCE((SELECT hermes_url FROM user_settings WHERE user_id=workspaces.user_id),''),hermes_api_key=COALESCE((SELECT hermes_api_key FROM user_settings WHERE user_id=workspaces.user_id),''),hermes_model=COALESCE((SELECT hermes_model FROM user_settings WHERE user_id=workspaces.user_id),'hermes-agent');`); e != nil {
+				return e
+			}
+		}
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_url TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_api_key TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_model TEXT NOT NULL DEFAULT 'hermes-agent'`)

@@ -74,7 +74,7 @@ func TestV2WorkspaceOwnershipAliasesAndCustomTools(t *testing.T) {
 	}
 }
 
-func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
+func TestHermesSettingsAreWorkspaceScoped(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -82,13 +82,26 @@ func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
 	defer a.Close()
 	h := a.Handler()
 	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"hermes@example.com","password":"password1"}`)
-	w, _ := req(t, h, cookie, "PATCH", "/api/settings", `{"hermes_url":"","hermes_api_key":""}`)
+	w, _ := req(t, h, cookie, "GET", "/api/workspaces", "")
+	var workspaces []map[string]any
+	json.Unmarshal(w.Body.Bytes(), &workspaces)
+	firstID := int64(workspaces[0]["id"].(float64))
+	w, _ = req(t, h, cookie, "POST", "/api/workspaces", `{"name":"Second"}`)
+	var second map[string]any
+	json.Unmarshal(w.Body.Bytes(), &second)
+	secondID := int64(second["id"].(float64))
+
+	w, _ = req(t, h, cookie, "PATCH", "/api/workspaces/"+itoa(firstID)+"/settings", `{"hermes_url":"","hermes_api_key":""}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing config accepted: %d %s", w.Code, w.Body.String())
 	}
-	w, _ = req(t, h, cookie, "PATCH", "/api/settings", `{"hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
+	w, _ = req(t, h, cookie, "PATCH", "/api/workspaces/"+itoa(firstID)+"/settings", `{"hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "default_cli") || strings.Contains(w.Body.String(), "secret") {
 		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, cookie, "GET", "/api/workspaces/"+itoa(secondID)+"/settings", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"hermes_url":""`) || strings.Contains(w.Body.String(), `127.0.0.1`) {
+		t.Fatalf("workspace settings leaked: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -113,7 +126,9 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 	a.DB.Exec("INSERT INTO user_settings(user_id,workspace_root,hermes_url,hermes_api_key,hermes_model) VALUES((SELECT id FROM users WHERE email='hermes-run@example.com'),?,?,?,?)", t.TempDir(), ts.URL+"/v1/", "secret", "hermes-agent")
 	var userID int64
 	a.DB.QueryRow("SELECT id FROM users WHERE email='hermes-run@example.com'").Scan(&userID)
-	got, err := a.runHermesSession(context.Background(), userID, "Reply OK", "session-123")
+	res, _ := a.DB.Exec("INSERT INTO workspaces(user_id,name,root,hermes_url,hermes_api_key,hermes_model) VALUES(?,'Test','',?,?,?)", userID, ts.URL+"/v1/", "secret", "hermes-agent")
+	workspaceID, _ := res.LastInsertId()
+	got, err := a.runHermesSession(context.Background(), workspaceID, "Reply OK", "session-123")
 	if err != nil || got != "OK" {
 		t.Fatalf("runHermes: got %q, err %v", got, err)
 	}
@@ -148,8 +163,9 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 	var user, lane int64
 	a.DB.QueryRow("SELECT id FROM users WHERE email='retry@example.com'").Scan(&user)
 	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
+	a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Lane 1',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user)
 	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
-	a.DB.Exec("UPDATE user_settings SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user)
+	a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user)
 	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position,attempt_count,finished_at) VALUES(?,?,'work','done',0,1,CURRENT_TIMESTAMP)", user, lane)
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +248,8 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 			var user, lane int64
 			a.DB.QueryRow("SELECT id FROM users WHERE email='recover@example.com'").Scan(&user)
 			a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
-			a.DB.Exec("UPDATE user_settings SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL+"/v1", user)
+			a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Lane 1',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user)
+			a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL+"/v1", user)
 			res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,warning,position,attempt_count) VALUES(?,?,'work','blocked','Execution session missing after server restart',0,1)", user, lane)
 			if err != nil {
 				t.Fatal(err)
@@ -280,7 +297,7 @@ func TestSettingsRequireAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	w, _ := req(t, a.Handler(), nil, "GET", "/api/settings", "")
+	w, _ := req(t, a.Handler(), nil, "GET", "/api/workspaces/1/settings", "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("logged-out settings access=%d, want %d", w.Code, http.StatusUnauthorized)
 	}

@@ -82,6 +82,8 @@ func (a *App) workspacePath(w http.ResponseWriter, r *http.Request) {
 			a.invite(w, r, id)
 		case "boards":
 			a.workspaceBoards(w, r, id)
+		case "settings":
+			a.workspaceSettings(w, r, id, role)
 		default:
 			fail(w, 404, "not found")
 		}

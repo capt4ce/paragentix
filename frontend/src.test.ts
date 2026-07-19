@@ -54,6 +54,7 @@ describe("workspace URL restoration", () => {
   it("restores list and valid detail tabs", () => {
     expect(parseLocation("?workspaces=1")).toEqual({ view: "workspaces" });
     expect(parseLocation("?workspace=7&tab=Projects")).toEqual({ view: "workspace", workspaceId: 7, tab: "Projects" });
+    expect(parseLocation("?workspace=7&tab=Settings")).toEqual({ view: "workspace", workspaceId: 7, tab: "Settings" });
     expect(parseLocation("?workspace=7&tab=wat")).toEqual({ view: "workspace", workspaceId: 7, tab: "Info" });
   });
   it("recognizes invitation links", () => expect(parseLocation("?invite=abc%201")).toEqual({ view: "invitation", token: "abc 1" }));
@@ -87,14 +88,23 @@ describe("account menu", () => {
     const d = document.createElement("details"); d.open = true;
     closeDetails({ current: d }); expect(d.open).toBe(false);
   });
-  it("includes the Settings action and settings form", () => {
+  it("keeps Hermes settings in workspace detail rather than the account menu", () => {
     const app = readFileSync("src/App.tsx", "utf8");
-    expect(app).toMatch(/>\s*Settings\s*<\/(?:button|AsyncButton)>/);
+    const accountMenu = app.slice(app.indexOf('className="accountmenu"'), app.indexOf('</details>', app.indexOf('className="accountmenu"')));
+    expect(accountMenu).not.toMatch(/>\s*Settings\s*<\/(?:button|AsyncButton)>/);
+    expect(app).toContain('["Info", "Projects", "Boards", "Users", "Settings"]');
     expect(app).toContain("Hermes URL");
     expect(app).not.toContain("Codex");
     expect(app).not.toContain("Claude Code");
     expect(app).not.toContain("default_cli");
     expect(app).not.toContain("cli_tool");
+  });
+});
+describe("workspace list", () => {
+  it("opens detail from the workspace record without a separate button", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app).toMatch(/<section[^>]+onClick=\{\(\) => openWorkspace\(w\)\}/);
+    expect(app).not.toContain("Open workspace");
   });
 });
 describe("notification center", () => {

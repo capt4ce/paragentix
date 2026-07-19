@@ -55,12 +55,12 @@ func (a *App) schedule() {
 		a.start(x.id, x.task, x.done, x.root)
 	}
 }
-func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (string, error) {
-	return a.runHermesSession(ctx, userID, prompt, "")
+func (a *App) runHermes(ctx context.Context, workspaceID int64, prompt string) (string, error) {
+	return a.runHermesSession(ctx, workspaceID, prompt, "")
 }
-func (a *App) runHermesSession(ctx context.Context, userID int64, prompt, sessionID string) (string, error) {
+func (a *App) runHermesSession(ctx context.Context, workspaceID int64, prompt, sessionID string) (string, error) {
 	var base, key, model string
-	if e := a.DB.QueryRow("SELECT hermes_url,hermes_api_key,hermes_model FROM user_settings WHERE user_id=?", userID).Scan(&base, &key, &model); e != nil {
+	if e := a.DB.QueryRow("SELECT hermes_url,hermes_api_key,hermes_model FROM workspaces WHERE id=?", workspaceID).Scan(&base, &key, &model); e != nil {
 		return "", e
 	}
 	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}})
@@ -179,9 +179,9 @@ func (a *App) retryHermes(id int64, state string) error {
 
 func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
 	go func() {
-		var user int64
-		a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", id).Scan(&user)
-		out, e := a.runHermesSession(context.Background(), user, prompt, sessionID)
+		var workspace int64
+		a.DB.QueryRow("SELECT b.workspace_id FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id WHERE j.id=?", id).Scan(&workspace)
+		out, e := a.runHermesSession(context.Background(), workspace, prompt, sessionID)
 		if e != nil {
 			a.block(id, run, e.Error())
 			return
@@ -278,9 +278,9 @@ type hermesMessages struct {
 	} `json:"data"`
 }
 
-func (a *App) hermesGet(user int64, path string, out any) error {
+func (a *App) hermesGet(job int64, path string, out any) error {
 	var base, key string
-	if err := a.DB.QueryRow("SELECT hermes_url,hermes_api_key FROM user_settings WHERE user_id=?", user).Scan(&base, &key); err != nil {
+	if err := a.DB.QueryRow("SELECT w.hermes_url,w.hermes_api_key FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id JOIN workspaces w ON w.id=b.workspace_id WHERE j.id=?", job).Scan(&base, &key); err != nil {
 		return err
 	}
 	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")+path, nil)
@@ -300,13 +300,9 @@ func (a *App) hermesGet(user int64, path string, out any) error {
 }
 
 func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
-	var user int64
-	if err := a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", job).Scan(&user); err != nil {
-		return false
-	}
 	var session hermesSession
 	var messages hermesMessages
-	if a.hermesGet(user, "/api/sessions/"+sessionID, &session) != nil || a.hermesGet(user, "/api/sessions/"+sessionID+"/messages", &messages) != nil {
+	if a.hermesGet(job, "/api/sessions/"+sessionID, &session) != nil || a.hermesGet(job, "/api/sessions/"+sessionID+"/messages", &messages) != nil {
 		return false
 	}
 	output := ""

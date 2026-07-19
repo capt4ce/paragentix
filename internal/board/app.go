@@ -75,7 +75,6 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/jobs/", a.auth(http.HandlerFunc(a.jobPath)))
 	m.Handle("/api/notifications", a.auth(http.HandlerFunc(a.notifications)))
 	m.Handle("/api/notifications/", a.auth(http.HandlerFunc(a.notificationPath)))
-	m.Handle("/api/settings", a.auth(http.HandlerFunc(a.settings)))
 	m.Handle("/api/cli-tools", a.auth(http.HandlerFunc(a.tools)))
 	m.Handle("/api/workspaces", a.auth(http.HandlerFunc(a.workspaces)))
 	m.Handle("/api/workspaces/", a.auth(http.HandlerFunc(a.workspacePath)))

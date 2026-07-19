@@ -320,8 +320,10 @@ export function App() {
       const d = await api("/workspaces/" + route.workspaceId);
       setDetail(d);
       setTab(route.tab!);
+      if (route.tab === "Settings")
+        setSettings(await api(`/workspaces/${route.workspaceId}/settings`));
       setItems(
-        route.tab === "Info"
+        route.tab === "Info" || route.tab === "Settings"
           ? []
           : await api(
               `/workspaces/${route.workspaceId}/${route.tab!.toLowerCase()}`,
@@ -395,8 +397,10 @@ export function App() {
     setTab(t);
     history.pushState({}, "", `?workspace=${detail.id}&tab=${t}`);
     try {
+      if (t === "Settings")
+        setSettings(await api(`/workspaces/${detail.id}/settings`));
       setItems(
-        t === "Info"
+        t === "Info" || t === "Settings"
           ? []
           : await api(`/workspaces/${detail.id}/${t.toLowerCase()}`),
       );
@@ -592,15 +596,6 @@ export function App() {
               <AsyncButton
                 onClick={async () => {
                   closeDetails(menu);
-                  setSettings(await api("/settings"));
-                  setDialog("settings");
-                }}
-              >
-                Settings
-              </AsyncButton>
-              <AsyncButton
-                onClick={async () => {
-                  closeDetails(menu);
                   await api("/auth/logout", { method: "POST" });
                   location.reload();
                 }}
@@ -658,12 +653,20 @@ export function App() {
             </button>
           </div>
           {ws.map((w) => (
-            <section className="panel" key={w.id}>
+            <section
+              className="panel clickable-row"
+              key={w.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openWorkspace(w)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") openWorkspace(w);
+              }}
+            >
               <h3>{w.name}</h3>
               <p>
                 {w.role} · {w.projectCount} projects · {w.memberCount} users
               </p>
-              <AsyncButton onClick={() => openWorkspace(w)}>Open workspace</AsyncButton>
             </section>
           ))}
         </main>
@@ -681,7 +684,7 @@ export function App() {
           <h2>{detail.name}</h2>
           <Tabs value={tab} onValueChange={chooseTab}>
             <TabsList>
-              {["Info", "Projects", "Boards", "Users"].map((t) => (
+              {["Info", "Projects", "Boards", "Users", "Settings"].map((t) => (
                 <TabsTrigger key={t} value={t} disabled={!!loadingTab} aria-busy={loadingTab === t || undefined}>
                   {loadingTab === t ? `${t}…` : t}
                 </TabsTrigger>
@@ -790,6 +793,52 @@ export function App() {
                 </section>
               ))}
             </>
+          )}
+          {tab === "Settings" && settings && (
+            <section className="panel">
+              <label>
+                Hermes URL
+                <input
+                  type="url"
+                  required
+                  disabled={detail.role !== "owner"}
+                  value={settings.hermes_url || ""}
+                  onChange={(e) => setSettings({ ...settings, hermes_url: e.target.value })}
+                />
+              </label>
+              <label>
+                Hermes API key
+                <input
+                  type="password"
+                  required={!settings.hermes_api_key_set}
+                  disabled={detail.role !== "owner"}
+                  placeholder={settings.hermes_api_key_set ? "Saved — leave blank to keep" : "Required"}
+                  value={settings.hermes_api_key || ""}
+                  onChange={(e) => setSettings({ ...settings, hermes_api_key: e.target.value })}
+                />
+              </label>
+              <label>
+                Hermes model
+                <input
+                  required
+                  disabled={detail.role !== "owner"}
+                  value={settings.hermes_model || "hermes-agent"}
+                  onChange={(e) => setSettings({ ...settings, hermes_model: e.target.value })}
+                />
+              </label>
+              {detail.role === "owner" && (
+                <AsyncButton onClick={async () => {
+                  try {
+                    setSettings(await api(`/workspaces/${detail.id}/settings`, {
+                      method: "PATCH",
+                      body: JSON.stringify(settings),
+                    }));
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                }}>Save</AsyncButton>
+              )}
+            </section>
           )}
         </main>
       )}
@@ -904,69 +953,6 @@ export function App() {
           {error && <p role="alert">{error}</p>}
           {dialog === "profile" ? (
             <p>{me.email}</p>
-          ) : dialog === "settings" && settings ? (
-            <>
-              <>
-                  <label>
-                    Hermes URL
-                    <input
-                      type="url"
-                      required
-                      value={settings.hermes_url || ""}
-                      onChange={(e) =>
-                        setSettings({ ...settings, hermes_url: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Hermes API key
-                    <input
-                      type="password"
-                      required={!settings.hermes_api_key_set}
-                      placeholder={
-                        settings.hermes_api_key_set
-                          ? "Saved — leave blank to keep"
-                          : "Required"
-                      }
-                      value={settings.hermes_api_key || ""}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          hermes_api_key: e.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Hermes model
-                    <input
-                      required
-                      value={settings.hermes_model || "hermes-agent"}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          hermes_model: e.target.value,
-                        })
-                      }
-                    />
-                  </label>
-              </>
-              <AsyncButton
-                onClick={async () => {
-                  try {
-                    await api("/settings", {
-                      method: "PATCH",
-                      body: JSON.stringify(settings),
-                    });
-                    setDialog("");
-                  } catch (e) {
-                    setError(String(e));
-                  }
-                }}
-              >
-                Save
-              </AsyncButton>
-            </>
           ) : dialog === "remove" ? (
             <>
               <p>Remove {form.email} from this workspace?</p>

@@ -8,8 +8,12 @@ import (
 	"strings"
 )
 
-func (a *App) settings(w http.ResponseWriter, r *http.Request) {
+func (a *App) workspaceSettings(w http.ResponseWriter, r *http.Request, workspaceID int64, role string) {
 	if r.Method == "PATCH" {
+		if role != "owner" {
+			fail(w, 403, "owner required")
+			return
+		}
 		var x struct {
 			HermesURL    string `json:"hermes_url"`
 			HermesAPIKey string `json:"hermes_api_key"`
@@ -21,16 +25,16 @@ func (a *App) settings(w http.ResponseWriter, r *http.Request) {
 		}
 		u, e := url.ParseRequestURI(x.HermesURL)
 		var savedKey string
-		a.DB.QueryRow("SELECT hermes_api_key FROM user_settings WHERE user_id=?", uid(r)).Scan(&savedKey)
+		a.DB.QueryRow("SELECT hermes_api_key FROM workspaces WHERE id=?", workspaceID).Scan(&savedKey)
 		if e != nil || (u.Scheme != "http" && u.Scheme != "https") || (x.HermesAPIKey == "" && savedKey == "") {
 			fail(w, 400, "Hermes URL and API key required")
 			return
 		}
-		a.DB.Exec("UPDATE user_settings SET hermes_url=?,hermes_api_key=CASE WHEN ?='' THEN hermes_api_key ELSE ? END,hermes_model=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?", x.HermesURL, x.HermesAPIKey, x.HermesAPIKey, x.HermesModel, uid(r))
+		a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key=CASE WHEN ?='' THEN hermes_api_key ELSE ? END,hermes_model=? WHERE id=?", x.HermesURL, x.HermesAPIKey, x.HermesAPIKey, x.HermesModel, workspaceID)
 	}
-	var root, hermesURL, hermesModel, key string
-	a.DB.QueryRow("SELECT workspace_root,hermes_url,hermes_model,hermes_api_key FROM user_settings WHERE user_id=?", uid(r)).Scan(&root, &hermesURL, &hermesModel, &key)
-	jsonOut(w, 200, map[string]any{"workspace_root": root, "hermes_url": hermesURL, "hermes_model": hermesModel, "hermes_api_key": "", "hermes_api_key_set": key != ""})
+	var hermesURL, hermesModel, key string
+	a.DB.QueryRow("SELECT hermes_url,hermes_model,hermes_api_key FROM workspaces WHERE id=?", workspaceID).Scan(&hermesURL, &hermesModel, &key)
+	jsonOut(w, 200, map[string]any{"hermes_url": hermesURL, "hermes_model": hermesModel, "hermes_api_key": "", "hermes_api_key_set": key != ""})
 }
 func available(name string) bool { _, e := exec.LookPath(name); return e == nil }
 func (a *App) tools(w http.ResponseWriter, r *http.Request) {
