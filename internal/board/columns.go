@@ -268,7 +268,24 @@ func (a *App) columnPath(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
 	case "DELETE":
-		a.DB.Exec(`UPDATE columns SET archived=1 WHERE id=?`, id)
+		tx, err := a.DB.Begin()
+		if err != nil {
+			fail(w, 500, "could not archive column")
+			return
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec(`UPDATE jobs SET archived=1 WHERE lane_id=?`, laneID); err != nil {
+			fail(w, 500, "could not archive column")
+			return
+		}
+		if _, err = tx.Exec(`UPDATE columns SET archived=1 WHERE id=?`, id); err != nil {
+			fail(w, 500, "could not archive column")
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			fail(w, 500, "could not archive column")
+			return
+		}
 		w.WriteHeader(204)
 	default:
 		fail(w, 405, "method not allowed")

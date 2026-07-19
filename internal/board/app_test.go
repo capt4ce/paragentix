@@ -118,6 +118,75 @@ func TestReorderColumnsPersistsBoardOrder(t *testing.T) {
 	}
 }
 
+func TestArchiveColumnArchivesItsJobsAtomically(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"archive-column@example.com","password":"password1"}`)
+
+	var userID, boardID, projectID int64
+	if err = a.DB.QueryRow(`SELECT u.id,b.id,p.id FROM users u JOIN boards b ON b.user_id=u.id JOIN projects p ON p.workspace_id=b.workspace_id WHERE u.email=?`, "archive-column@example.com").Scan(&userID, &boardID, &projectID); err != nil {
+		t.Fatal(err)
+	}
+	createColumn := func(name string) (int64, int64) {
+		t.Helper()
+		w, _ := req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"`+name+`","projectId":`+itoa(projectID)+`,"worktreeEnabled":false}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create column: %d %s", w.Code, w.Body.String())
+		}
+		var column map[string]any
+		json.Unmarshal(w.Body.Bytes(), &column)
+		columnID := int64(column["id"].(float64))
+		var laneID int64
+		if err := a.DB.QueryRow(`SELECT lane_id FROM columns WHERE id=?`, columnID).Scan(&laneID); err != nil {
+			t.Fatal(err)
+		}
+		return columnID, laneID
+	}
+	insertJob := func(laneID int64, position int) int64 {
+		t.Helper()
+		res, err := a.DB.Exec(`INSERT INTO jobs(user_id,lane_id,task,position) VALUES(?,?,?,?)`, userID, laneID, "job", position)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+
+	columnID, laneID := createColumn("Archive all")
+	jobIDs := []int64{insertJob(laneID, 0), insertJob(laneID, 1)}
+	w, _ := req(t, h, cookie, "DELETE", "/api/columns/"+itoa(columnID), "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("archive column: %d %s", w.Code, w.Body.String())
+	}
+	for _, jobID := range jobIDs {
+		var archived bool
+		if err = a.DB.QueryRow(`SELECT archived FROM jobs WHERE id=?`, jobID).Scan(&archived); err != nil || !archived {
+			t.Fatalf("job %d archived=%t err=%v", jobID, archived, err)
+		}
+	}
+
+	columnID, laneID = createColumn("Rollback all")
+	jobID := insertJob(laneID, 0)
+	if _, err = a.DB.Exec(`CREATE TRIGGER reject_job_archive BEFORE UPDATE OF archived ON jobs WHEN OLD.id=` + itoa(jobID) + ` AND NEW.archived=1 BEGIN SELECT RAISE(ABORT, 'reject archive'); END`); err != nil {
+		t.Fatal(err)
+	}
+	w, _ = req(t, h, cookie, "DELETE", "/api/columns/"+itoa(columnID), "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("archive with job failure: %d %s", w.Code, w.Body.String())
+	}
+	var columnArchived, jobArchived bool
+	if err = a.DB.QueryRow(`SELECT c.archived,j.archived FROM columns c JOIN jobs j ON j.lane_id=c.lane_id WHERE c.id=? AND j.id=?`, columnID, jobID).Scan(&columnArchived, &jobArchived); err != nil {
+		t.Fatal(err)
+	}
+	if columnArchived || jobArchived {
+		t.Fatalf("archive was not atomic: column=%t job=%t", columnArchived, jobArchived)
+	}
+}
+
 func TestCreateJobRejectsInvalidAttachmentsWithoutCreatingJob(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
