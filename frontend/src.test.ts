@@ -38,6 +38,12 @@ describe("account menu", () => {
     const d = document.createElement("details"); d.open = true;
     closeDetails({ current: d }); expect(d.open).toBe(false);
   });
+  it("includes the Settings action and settings form", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app).toContain(">Settings</button>");
+    expect(app).toContain("Default delegate");
+    expect(app).toContain("Hermes URL");
+  });
 });
 describe("notification center", () => {
   it("always renders an accessible bell beside the account menu", () => {
