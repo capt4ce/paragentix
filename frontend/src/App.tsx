@@ -59,7 +59,7 @@ export const mergeNotifications = (current: any[], incoming: any[]) => [
 ];
 export const canComment = (state: string) =>
   state === "in_progress" || state === "blocked" || state === "done";
-export const jobDetail = (x: any) => ({ ...x.job, events: x.events });
+export const jobDetail = (x: any) => ({ ...x.job, events: x.events, session_id: x.session_id });
 export const columnPatch = (form: any) => ({
   name: form.name,
   projectId: Number(form.projectId),
@@ -119,6 +119,14 @@ export function JobCard({
     </article>
   );
 }
+export function JobDetailMeta({ job }: { job: any }) {
+  return (
+    <p className="job-inspector-meta">
+      <b>{job.state}</b> · attempt {job.attempt_count}
+      {job.session_id && <> · Session ID: <code>{job.session_id}</code></>}
+    </p>
+  );
+}
 function JobDetail({
   job,
   close,
@@ -157,9 +165,7 @@ function JobDetail({
   };
   return (
     <DialogShell title="Job detail" close={close} inspector>
-      <p className="job-inspector-meta">
-        <b>{j.state}</b> · attempt {j.attempt_count}
-      </p>
+      <JobDetailMeta job={j} />
       <section className="job-inspector-section">
         <h3>Task</h3>
         <p>{j.task}</p>

@@ -535,7 +535,7 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 		t.Fatal("archived job run was not retained")
 	}
 	w, _ = req(t, h, c1, "GET", "/api/jobs/"+itoa(id), "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"kind":"archive"`) || !strings.Contains(w.Body.String(), `"content":"done"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"kind":"archive"`) || !strings.Contains(w.Body.String(), `"content":"done"`) || !strings.Contains(w.Body.String(), `"session_id":"archived-test"`) {
 		t.Fatalf("archived detail history: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, c2, "GET", "/api/jobs/"+itoa(id), "")

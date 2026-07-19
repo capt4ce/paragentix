@@ -233,6 +233,10 @@ func statusContent(old, next string) string {
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
 	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
+	var sessionID string
+	if err := a.DB.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session<>'job-history' ORDER BY id DESC LIMIT 1", id).Scan(&sessionID); err == nil {
+		sessionID = strings.TrimPrefix(sessionID, "hermes-api:")
+	}
 	var ev []map[string]any
 	rows, _ := a.DB.Query("SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()
@@ -242,7 +246,7 @@ func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 		rows.Scan(&i, &k, &c, &t)
 		ev = append(ev, map[string]any{"id": i, "kind": k, "content": c, "created_at": t})
 	}
-	jsonOut(w, 200, map[string]any{"job": j, "events": ev})
+	jsonOut(w, 200, map[string]any{"job": j, "events": ev, "session_id": sessionID})
 }
 func (a *App) editJob(w http.ResponseWriter, r *http.Request, id int64, state string) {
 	var x struct{ Task, DoneDefinition *string }

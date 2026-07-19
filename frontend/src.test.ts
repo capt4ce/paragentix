@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -169,12 +169,21 @@ describe("job comments", () => {
       jobDetail({
         job: { state: "blocked", task: "Fix it" },
         events: [{ kind: "output", content: "waiting" }],
+        session_id: "session-123",
       }),
     ).toEqual({
       state: "blocked",
       task: "Fix it",
       events: [{ kind: "output", content: "waiting" }],
+      session_id: "session-123",
     });
+  });
+});
+describe("job detail session", () => {
+  it("shows the session ID in the existing job metadata", () => {
+    const html = renderToStaticMarkup(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" } }));
+    expect(html).toContain("Session ID:");
+    expect(html).toContain("session-123");
   });
 });
 describe("job actions", () => {

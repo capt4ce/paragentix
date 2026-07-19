@@ -1,5 +1,5 @@
 export type JobState = "todo" | "in_progress" | "blocked" | "done";
-export interface Job { id:number; task:string; state:JobState; creatorName:string; done_definition?:string; attempt_count?:number; warning?:string; events?:JobEvent[] }
+export interface Job { id:number; task:string; state:JobState; creatorName:string; done_definition?:string; attempt_count?:number; session_id?:string; warning?:string; events?:JobEvent[] }
 export interface JobEvent { id:number; kind:string; content:string }
 export interface Column { id:number; name:string; projectName:string; projectId:number; worktreeEnabled:boolean; worktreeName?:string; jobs?:Job[] }
 export interface Workspace { id:number; name:string; role:string; projectCount:number; memberCount:number; projectDirectory?:string }
