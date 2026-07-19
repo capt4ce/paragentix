@@ -279,6 +279,16 @@ export function closeDetails(ref: { current: HTMLDetailsElement | null }) {
   if (ref.current) ref.current.open = false;
 }
 
+export function useJobDetailHistory(open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    history.pushState(history.state, "", location.href);
+    const pop = () => close();
+    addEventListener("popstate", pop);
+    return () => removeEventListener("popstate", pop);
+  }, [open]);
+}
+
 export function App() {
   const [me, setMe] = useState<any>(),
     [ws, setWs] = useState<any[]>([]),
@@ -301,6 +311,7 @@ export function App() {
     [loadingTab, setLoadingTab] = useState(""),
     [job, setJob] = useState<any>();
   const menu = useRef<HTMLDetailsElement>(null);
+  useJobDetailHistory(!!job, () => setJob(undefined));
   const load = async () => {
     const w = await api("/workspaces"),
       b = await api("/boards");
@@ -1083,7 +1094,7 @@ export function App() {
       {job && (
         <JobDetail
           job={job}
-          close={() => setJob(undefined)}
+          close={() => history.back()}
           refresh={async () => setJob(jobDetail(await api(`/jobs/${job.id}`)))}
         />
       )}

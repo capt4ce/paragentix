@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -194,6 +194,27 @@ describe("job detail session", () => {
     const html = renderToStaticMarkup(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" } }));
     expect(html).toContain("Session ID:");
     expect(html).toContain("session-123");
+  });
+});
+describe("job detail history", () => {
+  it("closes an open job detail on Back without leaving the underlying page", async () => {
+    history.replaceState({}, "", "?board=42");
+    const pushState = vi.spyOn(history, "pushState");
+    const Harness = () => {
+      const [open, setOpen] = useState(true);
+      useJobDetailHistory(open, () => setOpen(false));
+      return open ? createElement("div", { role: "dialog" }, "Job detail") : null;
+    };
+    const { queryByText, unmount } = render(createElement(Harness));
+
+    expect(pushState).toHaveBeenCalledWith({}, "", location.href);
+    expect(location.search).toBe("?board=42");
+    dispatchEvent(new PopStateEvent("popstate"));
+
+    await waitFor(() => expect(queryByText("Job detail")).toBeNull());
+    expect(location.search).toBe("?board=42");
+    unmount();
+    pushState.mockRestore();
   });
 });
 describe("job actions", () => {
