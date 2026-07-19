@@ -458,6 +458,59 @@ func TestWorkspaceMembersCanArchiveJobsAndColumns(t *testing.T) {
 	assertArchived("jobs", jobID, true)
 }
 
+func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"read-owner@x.test","password":"password1"}`)
+	_, member := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"read-member@x.test","password":"password1"}`)
+	_, outsider := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"read-outsider@x.test","password":"password1"}`)
+
+	var memberID, workspaceID, boardID, projectID int64
+	if err = a.DB.QueryRow(`SELECT b.workspace_id,b.id,p.id FROM boards b JOIN users u ON u.id=b.user_id JOIN projects p ON p.workspace_id=b.workspace_id WHERE u.email=?`, "read-owner@x.test").Scan(&workspaceID, &boardID, &projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DB.QueryRow(`SELECT id FROM users WHERE email=?`, "read-member@x.test").Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'member')`, workspaceID, memberID); err != nil {
+		t.Fatal(err)
+	}
+
+	w, _ := req(t, h, owner, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"Todo","projectId":`+itoa(projectID)+`,"worktreeEnabled":false}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create column: %d %s", w.Code, w.Body.String())
+	}
+	var column map[string]any
+	json.Unmarshal(w.Body.Bytes(), &column)
+	columnID := int64(column["id"].(float64))
+	w, _ = req(t, h, owner, "POST", "/api/columns/"+itoa(columnID)+"/jobs", `{"task":"Shared task","doneDefinition":"Reviewed"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create job: %d %s", w.Code, w.Body.String())
+	}
+	var job map[string]any
+	json.Unmarshal(w.Body.Bytes(), &job)
+	jobID := int64(job["id"].(float64))
+
+	for _, path := range []string{"/api/jobs/" + itoa(jobID), "/api/jobs/" + itoa(jobID) + "/events"} {
+		w, _ = req(t, h, member, "GET", path, "")
+		if w.Code != http.StatusOK {
+			t.Errorf("member GET %s: %d %s", path, w.Code, w.Body.String())
+		}
+		w, _ = req(t, h, outsider, "GET", path, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("outsider GET %s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	w, _ = req(t, h, member, "PATCH", "/api/jobs/"+itoa(jobID), `{"task":"Changed"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("member edited owner job: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWorkspaceUsersIncludesPendingInvitationsAndMembers(t *testing.T) {
 	root := t.TempDir()
 	a, err := Open(filepath.Join(t.TempDir(), "db"), root)
