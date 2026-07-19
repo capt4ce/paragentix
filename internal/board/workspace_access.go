@@ -189,6 +189,12 @@ func (a *App) invite(w http.ResponseWriter, r *http.Request, wid int64) {
 		fail(w, 400, "valid email required")
 		return
 	}
+	var me string
+	a.DB.QueryRow(`SELECT email FROM users WHERE id=?`, uid(r)).Scan(&me)
+	if x.Email == me {
+		fail(w, 409, "cannot invite yourself")
+		return
+	}
 	raw := token()
 	tx, e := a.DB.Begin()
 	if e == nil {

@@ -129,6 +129,25 @@ func TestInvitationURLAndReinviteAfterExpiry(t *testing.T) {
 	}
 }
 
+func TestInviteRejectsAuthenticatedUsersOwnEmail(t *testing.T) {
+	a, e := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	a.Mailer = testMailer{}
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"owner@x.test","password":"password1"}`)
+	w, _ := req(t, h, owner, "POST", "/api/workspaces", `{"name":"Team"}`)
+	var workspace map[string]any
+	json.Unmarshal(w.Body.Bytes(), &workspace)
+
+	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(int64(workspace["id"].(float64)))+"/invitations", `{"email":" Owner@X.Test "}`)
+	if w.Code != http.StatusConflict || w.Body.String() != "{\"error\":\"cannot invite yourself\"}\n" {
+		t.Fatalf("invite self=%d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	root := t.TempDir()
 	a, e := Open(filepath.Join(t.TempDir(), "db"), root)
