@@ -71,6 +71,19 @@ export const filterProjectJobs = (jobs: any[], status: string, search: string) =
     (status === "all" || job.state === status) &&
     (!query || job.task.toLocaleLowerCase().includes(query)));
 };
+export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[] }): RequestInit {
+  if (form.files?.length) {
+    const body = new FormData();
+    body.set("task", form.task);
+    body.set("doneDefinition", form.doneDefinition || "");
+    form.files.forEach((file) => body.append("files", file));
+    return { method: "POST", body };
+  }
+  return {
+    method: "POST",
+    body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition }),
+  };
+}
 export function JobCard({
   job,
   open,
@@ -461,11 +474,7 @@ export function App() {
         });
       if (dialog === "job")
         await api(`/columns/${form.columnId}/jobs`, {
-          method: "POST",
-          body: JSON.stringify({
-            task: form.task,
-            doneDefinition: form.doneDefinition,
-          }),
+          ...jobCreationRequest(form),
         });
       if (dialog === "edit column")
         await api(`/columns/${form.id}`, {
@@ -1003,6 +1012,17 @@ export function App() {
                         setForm({ ...form, doneDefinition: e.target.value })
                       }
                     />
+                  </label>
+                  <label>
+                    Additional context files
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(e) =>
+                        setForm({ ...form, files: Array.from(e.target.files || []) })
+                      }
+                    />
+                    <small>Up to 5 UTF-8 text files, 1 MB each.</small>
                   </label>
                 </>
               ) : (

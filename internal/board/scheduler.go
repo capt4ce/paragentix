@@ -110,11 +110,32 @@ func (a *App) start(id int64, task, done, root string) {
 		return
 	}
 	root = validated
-	a.startHermes(id, initialHermesPrompt(projectName, projectDirectory, task, done))
+	attachments := []jobAttachment{}
+	rows, err := a.DB.Query("SELECT name,content FROM job_attachments WHERE job_id=? ORDER BY id", id)
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+		var attachment jobAttachment
+		if err = rows.Scan(&attachment.Name, &attachment.Content); err != nil {
+			rows.Close()
+			return
+		}
+		attachments = append(attachments, attachment)
+	}
+	rows.Close()
+	a.startHermes(id, initialHermesPrompt(projectName, projectDirectory, task, done, attachments))
 }
 
-func initialHermesPrompt(projectName, projectDirectory, task, done string) string {
-	return fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
+func initialHermesPrompt(projectName, projectDirectory, task, done string, attachmentSets ...[]jobAttachment) string {
+	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
+	if len(attachmentSets) > 0 && len(attachmentSets[0]) > 0 {
+		prompt += "\n\nAdditional file context:"
+		for _, attachment := range attachmentSets[0] {
+			prompt += fmt.Sprintf("\n\nAttached file: %s\n```\n%s\n```", attachment.Name, attachment.Content)
+		}
+	}
+	return prompt
 }
 func (a *App) startHermes(id int64, prompt string) {
 	sessionID := token()

@@ -1,9 +1,11 @@
 package board
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,95 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, cookie := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"attachments@example.com","password":"password1"}`)
+	var lane int64
+	if err = a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=(SELECT id FROM users WHERE email='attachments@example.com')").Scan(&lane); err != nil {
+		t.Fatal(err)
+	}
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("task", "Review these notes")
+	form.WriteField("doneDefinition", "Summarize both files")
+	for name, content := range map[string]string{"notes.txt": "first note", "config.json": `{"enabled":true}`} {
+		part, partErr := form.CreateFormFile("files", name)
+		if partErr != nil {
+			t.Fatal(partErr)
+		}
+		part.Write([]byte(content))
+	}
+	form.Close()
+	r := httptest.NewRequest(http.MethodPost, "/api/lanes/"+itoa(lane)+"/jobs", &body)
+	r.Header.Set("Content-Type", form.FormDataContentType())
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create job: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	job := int64(out["id"].(float64))
+	rows, err := a.DB.Query("SELECT name,content FROM job_attachments WHERE job_id=? ORDER BY name", job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var attachments []jobAttachment
+	for rows.Next() {
+		var attachment jobAttachment
+		if err = rows.Scan(&attachment.Name, &attachment.Content); err != nil {
+			t.Fatal(err)
+		}
+		attachments = append(attachments, attachment)
+	}
+	prompt := initialHermesPrompt("Project", "/project", "Review these notes", "Summarize both files", attachments)
+	for _, want := range []string{"Attached file: config.json\n```\n{\"enabled\":true}\n```", "Attached file: notes.txt\n```\nfirst note\n```"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestCreateJobRejectsInvalidAttachmentsWithoutCreatingJob(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, cookie := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"invalid-attachment@example.com","password":"password1"}`)
+	var lane int64
+	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=(SELECT id FROM users WHERE email='invalid-attachment@example.com')").Scan(&lane)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("task", "Do not persist")
+	part, _ := form.CreateFormFile("files", "binary.dat")
+	part.Write([]byte{0xff, 0xfe})
+	form.Close()
+	r := httptest.NewRequest(http.MethodPost, "/api/lanes/"+itoa(lane)+"/jobs", &body)
+	r.Header.Set("Content-Type", form.FormDataContentType())
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "UTF-8 text") {
+		t.Fatalf("invalid attachment: %d %s", w.Code, w.Body.String())
+	}
+	var jobs int
+	a.DB.QueryRow("SELECT count(*) FROM jobs WHERE lane_id=?", lane).Scan(&jobs)
+	if jobs != 0 {
+		t.Fatalf("invalid upload created %d jobs", jobs)
+	}
+}
 
 func req(t *testing.T, h http.Handler, c *http.Cookie, method, path, body string) (*httptest.ResponseRecorder, *http.Cookie) {
 	t.Helper()

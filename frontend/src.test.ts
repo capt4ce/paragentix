@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory } from "./src";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
+afterEach(cleanup);
 describe("Mission Control foundation", () => {
   it("uses the accessible Radix dialog inspector", () => {
     const { getByRole, getByLabelText } = render(createElement(DialogShell, { title: "Inspector", close: vi.fn(), inspector: true }, "detail"));
@@ -64,6 +65,15 @@ describe("workspace URL restoration", () => {
   });
 });
 describe("project navigation and jobs", () => {
+	it("builds multipart job requests when files are attached", () => {
+		const files = [new File(["alpha"], "a.txt"), new File(["beta"], "b.md")];
+		const request = jobCreationRequest({ task: "Review", doneDefinition: "Report", files });
+		expect(request.body).toBeInstanceOf(FormData);
+		const body = request.body as FormData;
+		expect(body.get("task")).toBe("Review");
+		expect(body.getAll("files")).toEqual(files);
+		expect(request.headers).toBeUndefined();
+	});
   it("restores project list and detail URLs", () => {
     expect(parseLocation("?projects=1")).toEqual({ view: "projects" });
     expect(projectLocation(12)).toBe("?project=12");

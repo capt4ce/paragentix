@@ -3,10 +3,23 @@ package board
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+const (
+	maxJobAttachments = 5
+	maxAttachmentSize = 1 << 20
+	maxJobUploadSize  = maxJobAttachments*maxAttachmentSize + (64 << 10)
+)
+
+type jobAttachment struct {
+	Name, Content string
+}
 
 func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
@@ -98,7 +111,49 @@ func (a *App) lanePath(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 	var x struct{ Task, DoneDefinition string }
-	if decode(r, &x) != nil || strings.TrimSpace(x.Task) == "" {
+	var attachments []jobAttachment
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, maxJobUploadSize)
+		if err := r.ParseMultipartForm(maxJobUploadSize); err != nil {
+			fail(w, 400, "upload is too large or invalid")
+			return
+		}
+		x.Task, x.DoneDefinition = r.FormValue("task"), r.FormValue("doneDefinition")
+		files := r.MultipartForm.File["files"]
+		if len(files) > maxJobAttachments {
+			fail(w, 400, "at most 5 files may be attached")
+			return
+		}
+		seen := map[string]bool{}
+		for _, header := range files {
+			name := header.Filename
+			if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, "\x00\r\n") || seen[name] {
+				fail(w, 400, "attachment names must be unique, valid file names")
+				return
+			}
+			seen[name] = true
+			file, err := header.Open()
+			if err != nil {
+				fail(w, 400, "could not read attachment")
+				return
+			}
+			content, err := io.ReadAll(io.LimitReader(file, maxAttachmentSize+1))
+			file.Close()
+			if err != nil || len(content) > maxAttachmentSize {
+				fail(w, 400, "each attachment must be 1 MB or smaller")
+				return
+			}
+			if !utf8.Valid(content) || strings.IndexByte(string(content), 0) >= 0 {
+				fail(w, 400, "attachments must be UTF-8 text files")
+				return
+			}
+			attachments = append(attachments, jobAttachment{Name: name, Content: string(content)})
+		}
+	} else if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
+		return
+	}
+	if strings.TrimSpace(x.Task) == "" {
 		fail(w, 400, "task required")
 		return
 	}
@@ -108,8 +163,28 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 	if strings.TrimSpace(x.DoneDefinition) == "" {
 		warning = "Completion criteria generation deferred: add criteria manually or run the task as-is."
 	}
-	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,done_definition,warning,position) VALUES(?,?,?,?,?,?)", uid(r), lane, strings.TrimSpace(x.Task), strings.TrimSpace(x.DoneDefinition), warning, p)
+	tx, err := a.DB.Begin()
+	if err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,task,done_definition,warning,position) VALUES(?,?,?,?,?,?)", uid(r), lane, strings.TrimSpace(x.Task), strings.TrimSpace(x.DoneDefinition), warning, p)
+	if err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
 	id, _ := res.LastInsertId()
+	for _, attachment := range attachments {
+		if _, err = tx.Exec("INSERT INTO job_attachments(job_id,name,content) VALUES(?,?,?)", id, attachment.Name, attachment.Content); err != nil {
+			fail(w, 500, "could not save attachments")
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
 	jsonOut(w, 201, map[string]any{"id": id, "warning": warning})
 	a.signal()
 }
