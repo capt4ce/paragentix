@@ -220,10 +220,16 @@ describe("job comments", () => {
   });
 });
 describe("job detail session", () => {
-  it("shows the session ID in the existing job metadata", () => {
-    const html = renderToStaticMarkup(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" } }));
-    expect(html).toContain("Session ID:");
-    expect(html).toContain("session-123");
+  it("shows a shortened session ID separately and copies the full ID", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { container, getByRole } = render(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" } }));
+
+    expect(container.querySelector(".job-inspector-session")).toBeTruthy();
+    expect(getByRole("code").textContent).toBe("session");
+    expect(container.textContent).not.toContain("session-123");
+    fireEvent.click(getByRole("button", { name: "Copy session ID" }));
+    expect(writeText).toHaveBeenCalledWith("session-123");
   });
 });
 describe("job detail history", () => {

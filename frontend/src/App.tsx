@@ -4,6 +4,7 @@ import { api, base } from "@/lib/api";
 import { boardLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
+import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,7 @@ import { NotificationCenter } from "@/components/NotificationCenter";
 import { AsyncButton } from "@/components/AsyncButton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Archive, Paperclip, Pencil, Plus, Send } from "lucide-react";
+import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
 }
@@ -138,10 +139,26 @@ export function JobCard({
 }
 export function JobDetailMeta({ job }: { job: any }) {
   return (
-    <p className="job-inspector-meta">
-      <b>{job.state}</b> · attempt {job.attempt_count}
-      {job.session_id && <> · Session ID: <code>{job.session_id}</code></>}
-    </p>
+    <>
+      <p className="job-inspector-meta">
+        <b>{job.state}</b> · attempt {job.attempt_count}
+      </p>
+      {job.session_id && (
+        <div className="job-inspector-session">
+          <span>Session ID: <code>{job.session_id.slice(0, 7)}</code></span>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Copy session ID"
+            title="Copy session ID"
+            onClick={() => navigator.clipboard.writeText(job.session_id)}
+          >
+            <Copy />
+          </Button>
+        </div>
+      )}
+    </>
   );
 }
 function JobDetail({
