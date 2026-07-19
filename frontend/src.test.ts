@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory, WorkspaceUserStatus } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -161,6 +161,24 @@ describe("notification center", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 });
+describe("toast feedback", () => {
+  it("announces success and errors with the appropriate live-region roles", () => {
+    const success = render(createElement(Toast, { toast: { message: "Job 42 archived", type: "success" } }));
+    expect(success.getByRole("status").textContent).toBe("Job 42 archived");
+    success.unmount();
+    const failure = render(createElement(Toast, { toast: { message: "Failed to archive job 42", type: "error" } }));
+    expect(failure.getByRole("alert").textContent).toBe("Failed to archive job 42");
+    expect(failure.getByRole("alert").classList.contains("error")).toBe(true);
+  });
+  it("reports exact success feedback and sensible operation failures", async () => {
+    const notify = vi.fn();
+    await runWithToast(vi.fn(async () => {}), notify, "Job 42 retried", "Failed to retry job 42");
+    expect(notify).toHaveBeenLastCalledWith({ message: "Job 42 retried", type: "success" });
+
+    await runWithToast(vi.fn(async () => { throw new Error("locked"); }), notify, "Column Done archived", "Failed to archive column Done");
+    expect(notify).toHaveBeenLastCalledWith({ message: "Failed to archive column Done: locked", type: "error" });
+  });
+});
 describe("workspace invitation modal", () => {
   it("offers acceptance for a pending invitation", () => {
     const { getByRole } = render(createElement(InvitationDialog, { invitation: { id: 7, workspaceName: "Team", status: "pending" }, close: vi.fn(), accept: vi.fn() }));
@@ -176,6 +194,11 @@ describe("workspace invitation modal", () => {
   it("keeps matching sessions and logs out mismatched sessions", () => {
     expect(invitationSessionAction(" User@Example.com ", "user@example.com")).toBe("show");
     expect(invitationSessionAction("other@example.com", "user@example.com")).toBe("logout");
+  });
+  it("uses corrected invalid-email feedback", () => {
+    expect(invitationEmailValid("person@example.com")).toBe(true);
+    expect(invitationEmailValid("not an email")).toBe(false);
+    expect(readFileSync("src/App.tsx", "utf8")).toContain("Invitation email invalid");
   });
 });
 describe("api", () => {
@@ -237,16 +260,17 @@ describe("job comments", () => {
   });
 });
 describe("job detail session", () => {
-  it("shows a shortened session ID separately and copies the full ID", () => {
-    const writeText = vi.fn();
+  it("shows a shortened session ID separately and reports copying the full ID", async () => {
+    const writeText = vi.fn(async () => {}), notify = vi.fn();
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const { container, getByRole } = render(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" } }));
+    const { container, getByRole } = render(createElement(JobDetailMeta, { job: { state: "in_progress", attempt_count: 2, session_id: "session-123" }, notify }));
 
     expect(container.querySelector(".job-inspector-session")).toBeTruthy();
     expect(getByRole("code").textContent).toBe("session");
     expect(container.textContent).not.toContain("session-123");
     fireEvent.click(getByRole("button", { name: "Copy session ID" }));
     expect(writeText).toHaveBeenCalledWith("session-123");
+    await waitFor(() => expect(notify).toHaveBeenCalledWith({ message: "SessionID copied", type: "success" }));
   });
 });
 describe("job detail history", () => {

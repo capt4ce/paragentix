@@ -7,5 +7,6 @@ export * from "./src/lib/routes";
 export * from "./src/components/DialogShell";
 export * from "./src/components/NotificationCenter";
 export * from "./src/components/AsyncButton";
+export * from "./src/components/Toast";
 const root = document.getElementById("root");
 if (root) createRoot(root).render(<App />);

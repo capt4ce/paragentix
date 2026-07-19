@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { AsyncButton } from "@/components/AsyncButton";
+import { runWithToast, Toast, type ToastMessage } from "@/components/Toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
@@ -78,6 +79,7 @@ export function WorkspaceUserStatus({ status }: { status: "invited" | "member" }
 }
 export const invitationSessionAction = (sessionEmail: string, invitationEmail: string) =>
   sessionEmail.trim().toLowerCase() === invitationEmail.trim().toLowerCase() ? "show" : "logout";
+export const invitationEmailValid = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 export function InvitationDialog({ invitation, close, accept }: { invitation: any; close: () => void; accept: () => Promise<void> | void }) {
   const accepted = invitation.status === "accepted";
   return <DialogShell title="Workspace invitation" close={close}>
@@ -146,7 +148,7 @@ export function JobCard({
     </article>
   );
 }
-export function JobDetailMeta({ job }: { job: any }) {
+export function JobDetailMeta({ job, notify = () => {} }: { job: any; notify?: (toast: ToastMessage) => void }) {
   return (
     <>
       <p className="job-inspector-meta">
@@ -161,7 +163,12 @@ export function JobDetailMeta({ job }: { job: any }) {
             size="icon"
             aria-label="Copy session ID"
             title="Copy session ID"
-            onClick={() => navigator.clipboard.writeText(job.session_id)}
+            onClick={() => runWithToast(
+              () => navigator.clipboard.writeText(job.session_id),
+              notify,
+              "SessionID copied",
+              "Failed to copy SessionID",
+            )}
           >
             <Copy />
           </Button>
@@ -174,10 +181,12 @@ function JobDetail({
   job,
   close,
   refresh,
+  notify,
 }: {
   job: any;
   close: () => void;
   refresh: () => void;
+  notify: (toast: ToastMessage) => void;
 }) {
   const [d, setD] = useState<any>(),
     [done, setDone] = useState(job.done_definition),
@@ -199,16 +208,18 @@ function JobDetail({
     return () => es.close();
   }, [job.id]);
   const action = async (a: string, body = {}) => {
-    await api(`/jobs/${job.id}/${a}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    refresh();
-    close();
+    await runWithToast(async () => {
+      await api(`/jobs/${job.id}/${a}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      refresh();
+      close();
+    }, notify, `Job ${job.id} ${a === "retry" ? "retried" : a}`, `Failed to ${a} job ${job.id}`);
   };
   return (
     <DialogShell title="Job detail" close={close} inspector>
-      <JobDetailMeta job={j} />
+      <JobDetailMeta job={j} notify={notify} />
       <section className="job-inspector-section">
         <h3>Task</h3>
         <p>{j.task}</p>
@@ -240,9 +251,11 @@ function JobDetail({
         <AsyncButton
           className="danger"
           onClick={async () => {
-            await api("/jobs/" + job.id, { method: "DELETE" });
-            refresh();
-            setD(jobDetail(await api("/jobs/" + job.id)));
+            await runWithToast(async () => {
+              await api("/jobs/" + job.id, { method: "DELETE" });
+              refresh();
+              setD(jobDetail(await api("/jobs/" + job.id)));
+            }, notify, `Job ${job.id} archived`, `Failed to archive job ${job.id}`);
           }}
         >
           Archive job
@@ -366,7 +379,8 @@ export function App() {
     [jobSearch, setJobSearch] = useState(""),
     [loadingTab, setLoadingTab] = useState(""),
     [job, setJob] = useState<any>(),
-    [invitation, setInvitation] = useState<any>();
+    [invitation, setInvitation] = useState<any>(),
+    [toast, setToast] = useState<ToastMessage>();
   const menu = useRef<HTMLDetailsElement>(null);
   useJobDetailHistory(!!job, () => setJob(undefined));
   const load = async () => {
@@ -484,6 +498,10 @@ export function App() {
     }
   };
   const submit = async () => {
+    if (dialog === "invite" && !invitationEmailValid(form.email || "")) {
+      setToast({ message: "Invitation email invalid", type: "error" });
+      return;
+    }
     try {
       if (dialog === "workspace")
         await api("/workspaces", {
@@ -545,8 +563,13 @@ export function App() {
       setForm({});
       await load();
       if (view === "workspace") await chooseTab(tab);
+      if (dialog === "invite")
+        setToast({ message: `Invitation sent to ${form.email}`, type: "success" });
     } catch (e) {
-      setError(String(e));
+      if (dialog === "invite") {
+        const detail = e instanceof Error ? e.message : String(e);
+        setToast({ message: `Failed to send invitation: ${detail}`, type: "error" });
+      } else setError(String(e));
     }
   };
   const route = parseLocation(location.search);
@@ -979,8 +1002,10 @@ export function App() {
                       aria-label={`Archive ${c.name}`}
                       title="Archive column"
                       onClick={async () => {
-                        await archiveColumn(c.id);
-                        await load();
+                        await runWithToast(async () => {
+                          await archiveColumn(c.id);
+                          await load();
+                        }, setToast, `Column ${c.name} archived`, `Failed to archive column ${c.name}`);
                       }}
                     >
                       <Archive size={16} />
@@ -997,8 +1022,10 @@ export function App() {
                     job={j}
                     open={() => setJob(j)}
                     archive={async () => {
-                      await api(`/jobs/${j.id}`, { method: "DELETE" });
-                      await load();
+                      await runWithToast(async () => {
+                        await api(`/jobs/${j.id}`, { method: "DELETE" });
+                        await load();
+                      }, setToast, `Job ${j.id} archived`, `Failed to archive job ${j.id}`);
                     }}
                   />
                 ))}
@@ -1164,6 +1191,7 @@ export function App() {
           job={job}
           close={() => history.back()}
           refresh={async () => setJob(jobDetail(await api(`/jobs/${job.id}`)))}
+          notify={setToast}
         />
       )}
       {invitation && <InvitationDialog invitation={invitation} close={() => setInvitation(undefined)} accept={async () => {
@@ -1172,6 +1200,7 @@ export function App() {
         setInvitation({ ...invitation, status: "accepted" });
         await load();
       }} />}
+      <Toast toast={toast} />
     </>
   );
 }
