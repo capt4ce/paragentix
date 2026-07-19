@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation, DialogShell } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnPatch, eventSide, jobActionsVisible, jobColumn, mergeNotifications, NotificationCenter, parseLocation, DialogShell, swipedColumn } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -32,6 +32,10 @@ describe("workspace URL restoration", () => {
 });
 describe("column edit", () => {
   it("patches only the project while preserving worktree state", () => expect(columnPatch({projectId:"9",worktreeEnabled:true,worktreeName:"feature-x"})).toEqual({projectId:9}));
+  it("switches tabs with bounded horizontal swipes", () => {
+    expect(swipedColumn(1, 3, -80)).toBe(2);
+    expect(swipedColumn(0, 3, 80)).toBe(0);
+  });
 });
 describe("account menu", () => {
   it("closes native details", () => {
