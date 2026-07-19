@@ -48,7 +48,7 @@ type Lane struct {
 }
 
 func Open(path, workspace string) (*App, error) {
-	db, e := sql.Open("sqlite", path)
+	db, e := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if e != nil {
 		return nil, e
 	}
