@@ -22,6 +22,29 @@ export async function archiveColumn(id: number) {
 }
 export const eventSide = (kind: string) =>
   kind === "comment" || kind === "input" ? "sent" : "received";
+const timelineLinkPattern = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
+const trailingUrlPunctuation = /[.,!?;:]+$/;
+export function TimelineContent({ content }: { content: string }) {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of content.matchAll(timelineLinkPattern)) {
+    const index = match.index;
+    parts.push(content.slice(lastIndex, index));
+    const structuredUrl = match[2];
+    const rawUrl = structuredUrl ?? match[3];
+    const punctuation = structuredUrl ? "" : rawUrl.match(trailingUrlPunctuation)?.[0] ?? "";
+    const url = rawUrl.slice(0, rawUrl.length - punctuation.length);
+    parts.push(
+      <a key={index} href={url} target="_blank" rel="noopener noreferrer">
+        {structuredUrl ? match[1] : url}
+      </a>,
+      punctuation,
+    );
+    lastIndex = index + match[0].length;
+  }
+  parts.push(content.slice(lastIndex));
+  return <>{parts}</>;
+}
 export const mergeNotifications = (current: any[], incoming: any[]) => [
   ...current,
   ...incoming.filter((x) => !current.some((y) => y.id === x.id)),
@@ -155,7 +178,7 @@ function JobDetail({
                     ? "Error"
                     : "Agent"}
               </small>
-              <span>{e.content}</span>
+              <span><TimelineContent content={e.content} /></span>
             </div>
           ))
         ) : (

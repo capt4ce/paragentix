@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell, TimelineContent } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -151,6 +151,18 @@ describe("chat conversations", () => {
     const css = readFileSync("src/index.css", "utf8");
     expect(app).toContain("Blocked-session input");
     expect(css).toMatch(/\.conversation\{[^}]*min-height:min\(420px,50dvh\)/);
+  });
+  it("safely renders plain and structured timeline links", () => {
+    const { container, getByRole } = render(createElement(TimelineContent, {
+      content: "See https://example.test/log. [details](https://example.test/details) [unsafe](javascript:alert(1))",
+    }));
+    const links = container.querySelectorAll("a");
+    expect(links).toHaveLength(2);
+    expect(links[0].getAttribute("href")).toBe("https://example.test/log");
+    expect(links[0].getAttribute("target")).toBe("_blank");
+    expect(links[0].getAttribute("rel")).toBe("noopener noreferrer");
+    expect(getByRole("link", { name: "details" }).getAttribute("href")).toBe("https://example.test/details");
+    expect(container.textContent).toContain("[unsafe](javascript:alert(1))");
   });
 });
 describe("notification paging", () => {
