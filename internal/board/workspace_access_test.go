@@ -500,6 +500,14 @@ func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
 	if err = a.appendJobEvent(jobID, "output", "shared timeline entry"); err != nil {
 		t.Fatal(err)
 	}
+	w, _ = req(t, h, member, "GET", "/api/lanes", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"task":"Shared task"`) {
+		t.Errorf("member GET /api/lanes: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, outsider, "GET", "/api/lanes", "")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"task":"Shared task"`) {
+		t.Errorf("outsider GET /api/lanes exposed workspace job: %d %s", w.Code, w.Body.String())
+	}
 
 	for _, path := range []string{"/api/jobs/" + itoa(jobID), "/api/jobs/" + itoa(jobID) + "/events"} {
 		w, _ = req(t, h, member, "GET", path, "")

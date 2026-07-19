@@ -26,7 +26,9 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 201, map[string]any{"id": id})
 		return
 	}
-	rows, _ := a.DB.Query("SELECT id,name,position,paused FROM lanes WHERE user_id=? ORDER BY position", uid(r))
+	rows, _ := a.DB.Query(`SELECT l.id,l.name,l.position,l.paused FROM lanes l WHERE l.user_id=? OR EXISTS(
+		SELECT 1 FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id
+		WHERE c.lane_id=l.id AND m.user_id=?) ORDER BY l.position`, uid(r), uid(r))
 	defer rows.Close()
 	out := []Lane{}
 	for rows.Next() {
