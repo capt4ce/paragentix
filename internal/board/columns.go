@@ -81,6 +81,56 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 		jsonOut(w, 200, out)
 		return
 	}
+	if r.Method == "PATCH" {
+		var x struct {
+			ColumnIDs []int64 `json:"columnIds"`
+		}
+		if decode(r, &x) != nil {
+			fail(w, 400, "invalid request")
+			return
+		}
+		var count int
+		a.DB.QueryRow(`SELECT count(*) FROM columns WHERE board_id=? AND archived=0`, board).Scan(&count)
+		seen := make(map[int64]bool, len(x.ColumnIDs))
+		if len(x.ColumnIDs) != count {
+			fail(w, 400, "columnIds must contain every active board column")
+			return
+		}
+		for _, id := range x.ColumnIDs {
+			var ok int
+			if seen[id] || a.DB.QueryRow(`SELECT 1 FROM columns WHERE id=? AND board_id=? AND archived=0`, id, board).Scan(&ok) != nil {
+				fail(w, 400, "columnIds must contain every active board column")
+				return
+			}
+			seen[id] = true
+		}
+		tx, err := a.DB.Begin()
+		if err != nil {
+			fail(w, 500, "could not reorder columns")
+			return
+		}
+		if _, err = tx.Exec(`UPDATE columns SET position=-(position+1) WHERE board_id=?`, board); err == nil {
+			for position, id := range x.ColumnIDs {
+				if _, err = tx.Exec(`UPDATE columns SET position=? WHERE id=? AND board_id=?`, position, id, board); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				_, err = tx.Exec(`UPDATE columns SET position=?+id WHERE board_id=? AND archived=1`, count, board)
+			}
+		}
+		if err != nil {
+			tx.Rollback()
+			fail(w, 500, "could not reorder columns")
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			fail(w, 500, "could not reorder columns")
+			return
+		}
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	if r.Method != "POST" {
 		fail(w, 405, "method not allowed")
 		return

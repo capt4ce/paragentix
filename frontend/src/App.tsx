@@ -70,6 +70,13 @@ export const columnPatch = (form: any) => ({
   projectId: Number(form.projectId),
 });
 export const columnAnchor = (id: number) => `column-${id}`;
+export function moveColumn<T>(columns: T[], from: number, to: number) {
+  if (from === to || from < 0 || to < 0 || from >= columns.length || to >= columns.length) return columns;
+  const reordered = [...columns];
+  const [column] = reordered.splice(from, 1);
+  reordered.splice(to, 0, column);
+  return reordered;
+}
 export const filterProjectJobs = (jobs: any[], status: string, search: string) => {
   const query = search.trim().toLocaleLowerCase();
   return jobs.filter((job) =>
@@ -386,10 +393,29 @@ export function App() {
     [jobStatus, setJobStatus] = useState("all"),
     [jobSearch, setJobSearch] = useState(""),
     [loadingTab, setLoadingTab] = useState(""),
+    [reorderAnnouncement, setReorderAnnouncement] = useState(""),
     [job, setJob] = useState<any>(),
     [invitation, setInvitation] = useState<any>(),
     [toast, setToast] = useState<ToastMessage>();
   const menu = useRef<HTMLDetailsElement>(null);
+  const draggedColumn = useRef<number | null>(null);
+  const reorderColumns = async (from: number, to: number) => {
+    const previous = cols;
+    const reordered = moveColumn(previous, from, to);
+    if (reordered === previous || !board) return;
+    setCols(reordered);
+    setReorderAnnouncement(`${reordered[to].name} moved to position ${to + 1} of ${reordered.length}.`);
+    try {
+      await api(`/boards/${board.id}/columns`, {
+        method: "PATCH",
+        body: JSON.stringify({ columnIds: reordered.map((column) => column.id) }),
+      });
+    } catch (e) {
+      setCols(previous);
+      setReorderAnnouncement("Column order was not changed.");
+      setToast({ message: `Failed to reorder columns: ${String(e)}`, type: "error" });
+    }
+  };
   useJobDetailHistory(!!job, () => setJob(undefined));
   const load = async () => {
     const w = await api("/workspaces"),
@@ -947,9 +973,40 @@ export function App() {
       {view === "board" && (
         <>
           <nav className="column-nav" aria-label="Focus column">
-            {cols.map((c) => (
+            <span id="column-reorder-help" className="sr-only">
+              Drag column titles to reorder them, or press Alt with Left or Right arrow.
+            </span>
+            <span className="sr-only" role="status" aria-live="polite">{reorderAnnouncement}</span>
+            {cols.map((c, index) => (
               <button
                 key={c.id}
+                draggable
+                aria-describedby="column-reorder-help"
+                aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+                onDragStart={(event) => {
+                  draggedColumn.current = index;
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", String(c.id));
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const from = draggedColumn.current;
+                  draggedColumn.current = null;
+                  if (from !== null) void reorderColumns(from, index);
+                }}
+                onDragEnd={() => { draggedColumn.current = null; }}
+                onKeyDown={(event) => {
+                  if (!event.altKey) return;
+                  const offset = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+                  if (offset && index + offset >= 0 && index + offset < cols.length) {
+                    event.preventDefault();
+                    void reorderColumns(index, index + offset);
+                  }
+                }}
                 onClick={() =>
                   document
                     .getElementById(columnAnchor(c.id))

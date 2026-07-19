@@ -73,6 +73,51 @@ func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 	}
 }
 
+func TestReorderColumnsPersistsBoardOrder(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"reorder@example.com","password":"password1"}`)
+
+	var boardID, projectID int64
+	if err = a.DB.QueryRow(`SELECT b.id, p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=(SELECT id FROM users WHERE email=?)`, "reorder@example.com").Scan(&boardID, &projectID); err != nil {
+		t.Fatal(err)
+	}
+	columnIDs := make([]int64, 0, 4)
+	for _, name := range []string{"Archived", "Todo", "Doing", "Done"} {
+		w, _ := req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"`+name+`","projectId":`+itoa(projectID)+`,"worktreeEnabled":false}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
+		}
+		var column map[string]any
+		json.Unmarshal(w.Body.Bytes(), &column)
+		columnIDs = append(columnIDs, int64(column["id"].(float64)))
+	}
+	w, _ := req(t, h, cookie, "DELETE", "/api/columns/"+itoa(columnIDs[0]), "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("archive column: %d %s", w.Code, w.Body.String())
+	}
+	columnIDs = columnIDs[1:]
+
+	w, _ = req(t, h, cookie, "PATCH", "/api/boards/"+itoa(boardID)+"/columns", `{"columnIds":[`+itoa(columnIDs[2])+`,`+itoa(columnIDs[0])+`,`+itoa(columnIDs[1])+`]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reorder: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, cookie, "GET", "/api/boards/"+itoa(boardID)+"/columns", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("get columns: %d %s", w.Code, w.Body.String())
+	}
+	var columns []map[string]any
+	json.Unmarshal(w.Body.Bytes(), &columns)
+	got := []string{columns[0]["name"].(string), columns[1]["name"].(string), columns[2]["name"].(string)}
+	if strings.Join(got, ",") != "Done,Todo,Doing" {
+		t.Fatalf("persisted order = %v", got)
+	}
+}
+
 func TestCreateJobRejectsInvalidAttachmentsWithoutCreatingJob(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {

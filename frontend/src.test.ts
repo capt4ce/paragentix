@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -91,6 +91,13 @@ describe("project navigation and jobs", () => {
 describe("column edit", () => {
   it("patches the edited name and project while preserving worktree state", () => expect(columnPatch({name:"Review",projectId:"9",worktreeEnabled:true,worktreeName:"feature-x"})).toEqual({name:"Review",projectId:9}));
   it("links navigation to a column", () => expect(columnAnchor(7)).toBe("column-7"));
+});
+describe("column reorder", () => {
+  it("moves a dragged column without mutating the current order", () => {
+    const columns = [{ id: 1 }, { id: 2 }, { id: 3 }];
+    expect(moveColumn(columns, 2, 0).map((column) => column.id)).toEqual([3, 1, 2]);
+    expect(columns.map((column) => column.id)).toEqual([1, 2, 3]);
+  });
 });
 describe("account menu", () => {
   it("links the Paragentix wordmark to the app homepage", () => {
