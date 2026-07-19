@@ -31,10 +31,10 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
-		jr, _ := a.DB.Query("SELECT id,lane_id,task,done_definition,warning,state,cli_tool,position,attempt_count,created_at,updated_at FROM jobs WHERE lane_id=? ORDER BY CASE state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,position", l.ID)
+		jr, _ := a.DB.Query("SELECT id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at FROM jobs WHERE lane_id=? ORDER BY CASE state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,position", l.ID)
 		for jr.Next() {
 			var j Job
-			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.CLI, &j.Position, &j.Attempts, &j.Created, &j.Updated)
+			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated)
 			l.Jobs = append(l.Jobs, j)
 		}
 		jr.Close()
@@ -101,15 +101,13 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		fail(w, 400, "task required")
 		return
 	}
-	var cli string
-	a.DB.QueryRow("SELECT default_cli FROM user_settings WHERE user_id=?", uid(r)).Scan(&cli)
 	var p int
 	a.DB.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=?", lane).Scan(&p)
 	warning := ""
 	if strings.TrimSpace(x.DoneDefinition) == "" {
 		warning = "Completion criteria generation deferred: add criteria manually or run the task as-is."
 	}
-	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,done_definition,warning,cli_tool,position) VALUES(?,?,?,?,?,?,?)", uid(r), lane, strings.TrimSpace(x.Task), strings.TrimSpace(x.DoneDefinition), warning, cli, p)
+	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,done_definition,warning,position) VALUES(?,?,?,?,?,?)", uid(r), lane, strings.TrimSpace(x.Task), strings.TrimSpace(x.DoneDefinition), warning, p)
 	id, _ := res.LastInsertId()
 	jsonOut(w, 201, map[string]any{"id": id, "warning": warning})
 	a.signal()
@@ -186,7 +184,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
-	a.DB.QueryRow("SELECT id,lane_id,task,done_definition,warning,state,cli_tool,position,attempt_count,created_at,updated_at FROM jobs WHERE id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.CLI, &j.Position, &j.Attempts, &j.Created, &j.Updated)
+	a.DB.QueryRow("SELECT id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at FROM jobs WHERE id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated)
 	var ev []map[string]any
 	rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()

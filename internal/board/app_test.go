@@ -81,12 +81,12 @@ func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
 	defer a.Close()
 	h := a.Handler()
 	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"hermes@example.com","password":"password1"}`)
-	w, _ := req(t, h, cookie, "PATCH", "/api/settings", `{"default_cli":"hermes","hermes_url":"","hermes_api_key":""}`)
+	w, _ := req(t, h, cookie, "PATCH", "/api/settings", `{"hermes_url":"","hermes_api_key":""}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing config accepted: %d %s", w.Code, w.Body.String())
 	}
-	w, _ = req(t, h, cookie, "PATCH", "/api/settings", `{"default_cli":"hermes","hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"default_cli":"hermes"`) || strings.Contains(w.Body.String(), "secret") {
+	w, _ = req(t, h, cookie, "PATCH", "/api/settings", `{"hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "default_cli") || strings.Contains(w.Body.String(), "secret") {
 		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -167,32 +167,27 @@ func TestNotificationsArePaginatedAndOwnerScoped(t *testing.T) {
 	}
 }
 
-func TestCodexJobPromptIsPassedAsExecArgument(t *testing.T) {
-	prompt := "Implement responsive design\n\nDone definition:\nWorks on mobile"
-	got, sendKeys := jobCommand([]string{"codex", "-m", "gpt-5.6", "--yolo"}, "codex", prompt)
-	want := []string{"codex", "-m", "gpt-5.6", "--yolo", "exec", prompt}
-	if strings.Join(got, "|") != strings.Join(want, "|") || sendKeys {
-		t.Fatalf("command=%q sendKeys=%v", got, sendKeys)
-	}
-}
-
-func TestV2CommandLexerAndAdditiveMigration(t *testing.T) {
-	got, err := parseCommand(`codex -m "gpt 5" --flag='literal;$(x)' escaped\ value`)
-	want := []string{"codex", "-m", "gpt 5", "--flag=literal;$(x)", "escaped value"}
-	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("parse=%q err=%v", got, err)
-	}
-	for _, bad := range []string{"", `codex "unfinished`, "codex \\", "codex\x00bad"} {
-		if _, err := parseCommand(bad); err == nil {
-			t.Fatalf("accepted malformed %q", bad)
-		}
-	}
+func TestObsoleteColumnMigration(t *testing.T) {
+	var err error
 	db := filepath.Join(t.TempDir(), "existing.db")
 	a, err := Open(db, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = a.DB.Exec(`INSERT INTO users(email,password_hash) VALUES('legacy@example.com',x'00')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`INSERT INTO user_settings(user_id,workspace_root) VALUES((SELECT id FROM users WHERE email='legacy@example.com'),'')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`INSERT INTO lanes(user_id,name,position,paused) VALUES((SELECT id FROM users WHERE email='legacy@example.com'),'legacy lane',0,1);
+INSERT INTO jobs(user_id,lane_id,task,position,pending_comment) VALUES((SELECT id FROM users WHERE email='legacy@example.com'),(SELECT id FROM lanes WHERE name='legacy lane'),'preserve me',0,'follow up')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN default_cli TEXT NOT NULL DEFAULT 'codex';
+ALTER TABLE jobs ADD COLUMN cli_tool TEXT NOT NULL DEFAULT 'codex';
+ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT '';
+INSERT INTO custom_cli_tools(user_id,name,command,argv_json) VALUES((SELECT id FROM users WHERE email='legacy@example.com'),'local-agent','local-agent --safe','["local-agent","--safe"]');`); err != nil {
 		t.Fatal(err)
 	}
 	a.Close()
@@ -209,6 +204,25 @@ func TestV2CommandLexerAndAdditiveMigration(t *testing.T) {
 		if err = a.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("missing %s: %v", table, err)
 		}
+	}
+	if err = a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('custom_cli_tools') WHERE name='command'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("obsolete command column remains: %d %v", n, err)
+	}
+	for table, column := range map[string]string{"user_settings": "default_cli", "jobs": "cli_tool"} {
+		if err = a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("obsolete %s.%s remains: %d %v", table, column, n, err)
+		}
+	}
+	var argv string
+	if err = a.DB.QueryRow(`SELECT argv_json FROM custom_cli_tools WHERE name='local-agent'`).Scan(&argv); err != nil || argv != `["local-agent","--safe"]` {
+		t.Fatalf("custom tool lost: %q %v", argv, err)
+	}
+	var task, comment string
+	if err = a.DB.QueryRow(`SELECT task,pending_comment FROM jobs WHERE task='preserve me'`).Scan(&task, &comment); err != nil || task != "preserve me" || comment != "follow up" {
+		t.Fatalf("job data lost: task=%q comment=%q err=%v", task, comment, err)
+	}
+	if err = a.migrate(); err != nil {
+		t.Fatalf("idempotent rerun: %v", err)
 	}
 }
 

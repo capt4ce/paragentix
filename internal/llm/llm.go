@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/capt4ce/paragentix/internal/config"
@@ -34,33 +33,7 @@ type Provider interface {
 }
 
 func NewProvider(c config.ModelConfig) Provider {
-	if strings.EqualFold(c.Provider, "codex") || strings.EqualFold(c.Provider, "codex-subscription") {
-		return CodexProvider{Config: c}
-	}
 	return OpenAICompatible{Config: c, Client: http.DefaultClient}
-}
-
-type CodexProvider struct{ Config config.ModelConfig }
-
-func (p CodexProvider) Chat(ctx context.Context, m []Message, t []ToolSchema) (ChatResponse, error) {
-	if p.Config.Command == "" {
-		return ChatResponse{}, fmt.Errorf("codex command not configured")
-	}
-	b, err := json.Marshal(map[string]any{"messages": m, "tools": t, "model": p.Config.Model})
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	cmd := exec.CommandContext(ctx, p.Config.Command)
-	cmd.Stdin = bytes.NewReader(b)
-	out, err := cmd.Output()
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	var res ChatResponse
-	if err := json.Unmarshal(out, &res); err != nil {
-		return ChatResponse{}, err
-	}
-	return res, nil
 }
 
 type OpenAICompatible struct {

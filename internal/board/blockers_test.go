@@ -102,7 +102,7 @@ INSERT INTO boards(id,user_id,workspace_id,name) VALUES(92,92,92,'board');
 INSERT INTO projects(id,user_id,workspace_id,name,directory) VALUES(92,92,92,'project',?);
 INSERT INTO lanes(id,user_id,name,position) VALUES(92,92,'lane',92);
 INSERT INTO columns(id,user_id,board_id,lane_id,project_id,name,position) VALUES(92,92,92,92,92,'column',92);
-INSERT INTO jobs(id,user_id,lane_id,task,cli_tool,position) VALUES(92,92,92,'task','missing-cli',92);`, root, directory)
+INSERT INTO jobs(id,user_id,lane_id,task,position) VALUES(92,92,92,'task',92);`, root, directory)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +110,7 @@ INSERT INTO jobs(id,user_id,lane_id,task,cli_tool,position) VALUES(92,92,92,'tas
 				t.Fatal(err)
 			}
 
-			a.start(92, "task", "done", "missing-cli", root)
+			a.start(92, "task", "done", root)
 
 			var state, warning string
 			var attempts, runs int
@@ -133,11 +133,11 @@ func TestStartFailsClosedWithoutSelectedProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	_, err = a.DB.Exec(`INSERT INTO users(id,email,password_hash) VALUES(91,'runtime@example.test',x'00'); INSERT INTO lanes(id,user_id,name,position) VALUES(91,91,'lane',91); INSERT INTO jobs(id,user_id,lane_id,task,cli_tool,position) VALUES(91,91,91,'task','missing-cli',91)`)
+	_, err = a.DB.Exec(`INSERT INTO users(id,email,password_hash) VALUES(91,'runtime@example.test',x'00'); INSERT INTO lanes(id,user_id,name,position) VALUES(91,91,'lane',91); INSERT INTO jobs(id,user_id,lane_id,task,position) VALUES(91,91,91,'task',91)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.start(91, "task", "done", "missing-cli", t.TempDir())
+	a.start(91, "task", "done", t.TempDir())
 	var state, warning string
 	if err = a.DB.QueryRow(`SELECT state,warning FROM jobs WHERE id=91`).Scan(&state, &warning); err != nil || state != "blocked" || !strings.Contains(warning, "project") {
 		t.Fatalf("state=%q warning=%q err=%v", state, warning, err)

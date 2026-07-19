@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -33,18 +32,18 @@ func (a *App) scheduler() {
 	}
 }
 func (a *App) schedule() {
-	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,j.cli_tool,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked')) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' ORDER BY q.position LIMIT 1)`)
+	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked')) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' ORDER BY q.position LIMIT 1)`)
 	if e != nil {
 		return
 	}
 	type q struct {
-		id                             int64
-		task, done, cli, root, comment string
+		id                        int64
+		task, done, root, comment string
 	}
 	var qs []q
 	for rows.Next() {
 		var x q
-		rows.Scan(&x.id, &x.task, &x.done, &x.cli, &x.root, &x.comment)
+		rows.Scan(&x.id, &x.task, &x.done, &x.root, &x.comment)
 		qs = append(qs, x)
 	}
 	rows.Close()
@@ -52,16 +51,9 @@ func (a *App) schedule() {
 		if x.comment != "" {
 			x.task += "\n\nFollow-up reply:\n" + x.comment
 		}
-		a.start(x.id, x.task, x.done, x.cli, x.root)
+		a.start(x.id, x.task, x.done, x.root)
 	}
 }
-func jobCommand(argv []string, cli, prompt string) ([]string, bool) {
-	if cli == "codex" {
-		return append(argv, "exec", prompt), false
-	}
-	return argv, true
-}
-
 func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (string, error) {
 	var base, key, model string
 	if e := a.DB.QueryRow("SELECT hermes_url,hermes_api_key,hermes_model FROM user_settings WHERE user_id=?", userID).Scan(&base, &key, &model); e != nil {
@@ -99,7 +91,7 @@ func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (strin
 	return out.Choices[0].Message.Content, nil
 }
 
-func (a *App) start(id int64, task, done, cli, root string) {
+func (a *App) start(id int64, task, done, root string) {
 	var effective string
 	if err := a.DB.QueryRow(`SELECT CASE WHEN c.worktree_enabled=1 THEN c.worktree_path ELSE p.directory END FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id WHERE j.id=?`, id).Scan(&effective); err != nil || effective == "" {
 		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected project or worktree is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
@@ -110,50 +102,7 @@ func (a *App) start(id int64, task, done, cli, root string) {
 		return
 	}
 	root = validated
-	if cli == "hermes" {
-		a.startHermes(id, task+"\n\nDone definition:\n"+done)
-		return
-	}
-	var command string
-	a.DB.QueryRow(`SELECT command FROM custom_cli_tools WHERE user_id=(SELECT user_id FROM jobs WHERE id=?) AND name=?`, id, cli).Scan(&command)
-	if command == "" {
-		command = cli
-	}
-	argv, e := parseCommand(command)
-	if e != nil || !available("tmux") || !available(argv[0]) {
-		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected CLI or tmux is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
-		return
-	}
-	session := fmt.Sprintf("agent-job-%d", id)
-	tx, _ := a.DB.Begin()
-	res, e := tx.Exec("UPDATE jobs SET state='in_progress',pending_comment='',attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", id)
-	if e != nil {
-		tx.Rollback()
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		tx.Rollback()
-		return
-	}
-	var attempt int
-	tx.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", id).Scan(&attempt)
-	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, session)
-	run, _ := rr.LastInsertId()
-	tx.Commit()
-	prompt := task + "\n\nDone definition:\n" + done
-	argv, sendKeys := jobCommand(argv, cli, prompt)
-	args := []string{"new-session", "-d", "-s", session, "-c", filepath.Clean(root), "--"}
-	args = append(args, argv...)
-	if e := exec.Command("tmux", args...).Run(); e != nil {
-		a.block(id, run, e.Error())
-		return
-	}
-	if sendKeys {
-		exec.Command("tmux", "send-keys", "-t", session, "-l", prompt).Run()
-		exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
-	}
-	go a.monitor(id, run, session)
+	a.startHermes(id, task+"\n\nDone definition:\n"+done)
 }
 func (a *App) startHermes(id int64, prompt string) {
 	tx, _ := a.DB.Begin()

@@ -47,7 +47,6 @@ export function JobCard({
       <button type="button" className="job-open" onClick={open}>
         <b>{job.task}</b>
         <StatusBadge state={job.state} />
-        {job.cli_tool && <small>{job.cli_tool}</small>}
       </button>
       <button
         type="button"
@@ -103,7 +102,7 @@ function JobDetail({
   return (
     <DialogShell title="Job detail" close={close} inspector>
       <p className="job-inspector-meta">
-        <b>{j.state}</b> · {j.cli_tool} · attempt {j.attempt_count}
+        <b>{j.state}</b> · attempt {j.attempt_count}
       </p>
       <section className="job-inspector-section">
         <h3>Task</h3>
@@ -836,7 +835,7 @@ export function App() {
                   try {
                     await api("/settings", {
                       method: "PATCH",
-                      body: JSON.stringify({ ...settings, default_cli: "hermes" }),
+                      body: JSON.stringify(settings),
                     });
                     setDialog("");
                   } catch (e) {

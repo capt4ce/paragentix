@@ -32,7 +32,6 @@ type Job struct {
 	Done     string `json:"done_definition"`
 	Warning  string `json:"warning"`
 	State    string `json:"state"`
-	CLI      string `json:"cli_tool"`
 	Position int    `json:"position"`
 	Attempts int    `json:"attempt_count"`
 	Created  string `json:"created_at"`

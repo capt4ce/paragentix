@@ -36,7 +36,7 @@ describe("column edit", () => {
 });
 describe("account menu", () => {
   it("links the Paragentix wordmark to the app homepage", () => {
-    expect(readFileSync("src/App.tsx", "utf8")).toContain('<a href={base} aria-label="Paragentix home">Paragentix</a>');
+    expect(readFileSync("src/App.tsx", "utf8")).toMatch(/<a href=\{base\} aria-label="Paragentix home">\s*Paragentix\s*<\/a>/);
   });
   it("closes native details", () => {
     const d = document.createElement("details"); d.open = true;
@@ -44,9 +44,12 @@ describe("account menu", () => {
   });
   it("includes the Settings action and settings form", () => {
     const app = readFileSync("src/App.tsx", "utf8");
-    expect(app).toContain(">Settings</button>");
-    expect(app).toContain("Default delegate");
+    expect(app).toMatch(/>\s*Settings\s*<\/button>/);
     expect(app).toContain("Hermes URL");
+    expect(app).not.toContain("Codex");
+    expect(app).not.toContain("Claude Code");
+    expect(app).not.toContain("default_cli");
+    expect(app).not.toContain("cli_tool");
   });
 });
 describe("notification center", () => {
@@ -165,6 +168,6 @@ describe("mobile board controls", () => {
   });
   it("renders an add-job control in every column", () => {
     expect(app).toContain('className="add"');
-    expect(app).toContain(">+ Add job</button>");
+    expect(app).toMatch(/>\s*\+ Add job\s*<\/button>/);
   });
 });
