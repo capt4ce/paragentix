@@ -106,7 +106,7 @@ func (a *App) start(id int64, task, done, root string) {
 }
 
 func initialHermesPrompt(projectName, projectDirectory, task, done string) string {
-	return fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, task, done)
+	return fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
 }
 func (a *App) startHermes(id int64, prompt string) {
 	tx, _ := a.DB.Begin()

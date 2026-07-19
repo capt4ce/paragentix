@@ -117,7 +117,7 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 
 func TestInitialHermesPromptIncludesColumnProject(t *testing.T) {
 	prompt := initialHermesPrompt("Paragentix", "/srv/projects/paragentix", "Fix the scheduler", "Tests pass")
-	want := "Unless otherwise specified, this conversation concerns the project Paragentix, located at /srv/projects/paragentix. Use this project as the default when creating or modifying jobs.\n\nFix the scheduler\n\nDone definition:\nTests pass"
+	want := "Unless otherwise specified, this conversation concerns the project Paragentix, located at /srv/projects/paragentix. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with /srv/projects/paragentix as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\nFix the scheduler\n\nDone definition:\nTests pass"
 	if prompt != want {
 		t.Fatalf("prompt = %q, want %q", prompt, want)
 	}
