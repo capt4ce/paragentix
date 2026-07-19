@@ -23,7 +23,7 @@ export async function archiveColumn(id: number) {
 export const eventSide = (kind: string) =>
   kind === "comment" || kind === "input" ? "sent" : "received";
 const timelineLinkPattern = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
-const trailingUrlPunctuation = /[.,!?;:]+$/;
+const trailingUrlPunctuation = /[.,!?;:)\]}]+$/;
 export function TimelineContent({ content }: { content: string }) {
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;

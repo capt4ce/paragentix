@@ -164,6 +164,14 @@ describe("chat conversations", () => {
     expect(getByRole("link", { name: "details" }).getAttribute("href")).toBe("https://example.test/details");
     expect(container.textContent).toContain("[unsafe](javascript:alert(1))");
   });
+  it("preserves timeline text around a parenthesized public URL", () => {
+    const content = "Public link: (https://dev.ahsanworks.com/)\nReady";
+    const { container, getByRole } = render(createElement(TimelineContent, { content }));
+
+    expect(getByRole("link", { name: "https://dev.ahsanworks.com/" }).getAttribute("href"))
+      .toBe("https://dev.ahsanworks.com/");
+    expect(container.textContent).toBe(content);
+  });
 });
 describe("notification paging", () => {
   it("appends only unseen notifications", () => {
