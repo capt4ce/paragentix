@@ -395,10 +395,16 @@ func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
 	if w.Code != 400 {
 		t.Fatalf("blank comment=%d", w.Code)
 	}
+	exec.Command("tmux", "kill-session", "-t", session).Run()
 	a.DB.Exec("UPDATE jobs SET state='done' WHERE id=?", id)
 	w, _ = req(t, h, c, "POST", "/api/jobs/"+itoa(id)+"/comment", `{"comment":"late"}`)
-	if w.Code != 409 {
+	if w.Code != 200 {
 		t.Fatalf("done comment=%d", w.Code)
+	}
+	var state string
+	a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", id).Scan(&state)
+	if state != "todo" && state != "in_progress" {
+		t.Fatalf("done comment state=%q", state)
 	}
 }
 

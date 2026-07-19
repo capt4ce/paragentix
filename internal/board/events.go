@@ -78,7 +78,7 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 		fail(w, 405, "method not allowed")
 		return
 	}
-	if state != "in_progress" && state != "blocked" {
+	if state != "in_progress" && state != "blocked" && state != "done" {
 		fail(w, 409, "job session is not active")
 		return
 	}
@@ -90,6 +90,26 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 	x.Comment = strings.TrimSpace(x.Comment)
 	if x.Comment == "" || len(x.Comment) > 4000 {
 		fail(w, 400, "comment must be 1-4000 characters")
+		return
+	}
+	if state == "done" {
+		var run int64
+		if e := a.DB.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", id).Scan(&run); e != nil {
+			fail(w, 409, "previous session not found")
+			return
+		}
+		var seq int
+		a.DB.QueryRow("SELECT COALESCE(MAX(sequence),0)+1 FROM job_events WHERE job_run_id=?", run).Scan(&seq)
+		tx, _ := a.DB.Begin()
+		if _, e := tx.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,?,?,?)", run, seq, "comment", x.Comment); e != nil {
+			tx.Rollback()
+			fail(w, 500, "could not record comment")
+			return
+		}
+		tx.Exec("UPDATE jobs SET state='todo',pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", x.Comment, id)
+		tx.Commit()
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		a.signal()
 		return
 	}
 	var run int64
