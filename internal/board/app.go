@@ -37,6 +37,7 @@ type Job struct {
 	Created  string `json:"created_at"`
 	Updated  string `json:"updated_at"`
 	Creator  string `json:"creatorName"`
+	Archived bool   `json:"archived"`
 }
 type Lane struct {
 	ID       int64  `json:"id"`

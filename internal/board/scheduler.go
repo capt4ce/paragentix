@@ -32,7 +32,7 @@ func (a *App) scheduler() {
 	}
 }
 func (a *App) schedule() {
-	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked')) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' ORDER BY q.position LIMIT 1)`)
+	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
 	if e != nil {
 		return
 	}
@@ -95,6 +95,7 @@ func (a *App) start(id int64, task, done, root string) {
 	var effective, projectName, projectDirectory string
 	if err := a.DB.QueryRow(`SELECT CASE WHEN c.worktree_enabled=1 THEN c.worktree_path ELSE p.directory END,p.name,p.directory FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id WHERE j.id=?`, id).Scan(&effective, &projectName, &projectDirectory); err != nil || effective == "" {
 		a.DB.Exec("UPDATE jobs SET state='blocked',warning='Selected project or worktree is unavailable',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.appendJobEvent(id, "status", statusContent("todo", "blocked"))
 		return
 	}
 	_, validated, err := canonicalDir(a.workspaceRoot(), effective)
@@ -124,6 +125,10 @@ func (a *App) startHermes(id int64, prompt string) {
 	tx.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", id).Scan(&attempt)
 	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, "hermes-api")
 	run, _ := rr.LastInsertId()
+	if e = appendJobEventTx(tx, id, "status", statusContent("todo", "in_progress")); e != nil {
+		tx.Rollback()
+		return
+	}
 	tx.Commit()
 	go func() {
 		var user int64
@@ -133,9 +138,10 @@ func (a *App) startHermes(id int64, prompt string) {
 			a.block(id, run, e.Error())
 			return
 		}
-		a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'output',?)", run, out)
+		a.appendJobEvent(id, "output", out)
 		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", out, run)
 		a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.appendJobEvent(id, "status", statusContent("in_progress", "done"))
 		a.notify(id, run, "done")
 		a.signal()
 	}()
@@ -143,6 +149,7 @@ func (a *App) startHermes(id int64, prompt string) {
 
 func (a *App) monitor(job, run int64, session string) {
 	seq := 0
+	a.DB.QueryRow("SELECT COALESCE(MAX(sequence),0) FROM job_events WHERE job_run_id=?", run).Scan(&seq)
 	last := ""
 	for i := 0; i < 3600; i++ {
 		time.Sleep(time.Second)
@@ -159,7 +166,10 @@ func (a *App) monitor(job, run int64, session string) {
 		}
 		if e != nil {
 			a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", last, run)
-			a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_progress'", job)
+			res, _ := a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_progress'", job)
+			if changed, _ := res.RowsAffected(); changed > 0 {
+				a.appendJobEvent(job, "status", statusContent("in_progress", "done"))
+			}
 			a.notify(job, run, "done")
 			a.signal()
 			return
@@ -168,9 +178,14 @@ func (a *App) monitor(job, run int64, session string) {
 	a.block(job, run, "execution timed out")
 }
 func (a *App) block(job, run int64, msg string) {
+	var old string
+	a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&old)
 	a.DB.Exec("UPDATE job_runs SET status='blocked',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", msg, run)
-	a.DB.Exec("INSERT OR IGNORE INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'error',?)", run, msg)
+	a.appendJobEvent(job, "error", msg)
 	a.DB.Exec("UPDATE jobs SET state='blocked',warning=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", msg, job)
+	if old != "blocked" {
+		a.appendJobEvent(job, "status", statusContent(old, "blocked"))
+	}
 	a.notify(job, run, "error")
 }
 func (a *App) reconcile() {

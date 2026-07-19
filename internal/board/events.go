@@ -106,6 +106,11 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 			fail(w, 500, "could not record comment")
 			return
 		}
+		if e := appendJobEventTx(tx, id, "status", statusContent("done", "todo")); e != nil {
+			tx.Rollback()
+			fail(w, 500, "could not record status")
+			return
+		}
 		tx.Exec("UPDATE jobs SET state='todo',pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", x.Comment, id)
 		tx.Commit()
 		jsonOut(w, 200, map[string]bool{"ok": true})

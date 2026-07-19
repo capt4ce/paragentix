@@ -349,6 +349,11 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 	if e := a.DB.QueryRow("SELECT state,finished_at FROM jobs WHERE id=?", id).Scan(&state, &finished); e != nil || state != "todo" || finished != nil {
 		t.Fatalf("retried job state=%q finished=%v err=%v", state, finished, e)
 	}
+	var retryEvents int
+	a.DB.QueryRow(`SELECT count(*) FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? AND ((e.kind='status' AND e.content LIKE '%done%todo%') OR e.kind='retry')`, id).Scan(&retryEvents)
+	if retryEvents != 2 {
+		t.Fatalf("retry timeline events=%d, want status and retry", retryEvents)
+	}
 	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
 	if w.Code != 200 {
 		t.Fatalf("retry todo=%d %s", w.Code, w.Body.String())
@@ -370,13 +375,21 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 		t.Fatalf("archive done=%d %s", w.Code, w.Body.String())
 	}
 	var count int
-	a.DB.QueryRow("SELECT COUNT(*) FROM jobs WHERE id=?", id).Scan(&count)
-	if count != 0 {
-		t.Fatal("archived job still exists")
+	a.DB.QueryRow("SELECT COUNT(*) FROM jobs WHERE id=? AND archived=1", id).Scan(&count)
+	if count != 1 {
+		t.Fatal("archived job was not retained")
 	}
 	a.DB.QueryRow("SELECT COUNT(*) FROM job_runs WHERE id=?", runID).Scan(&count)
-	if count != 0 {
-		t.Fatal("archived job run still exists")
+	if count != 1 {
+		t.Fatal("archived job run was not retained")
+	}
+	w, _ = req(t, h, c1, "GET", "/api/jobs/"+itoa(id), "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"kind":"archive"`) || !strings.Contains(w.Body.String(), `"content":"done"`) {
+		t.Fatalf("archived detail history: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, c2, "GET", "/api/jobs/"+itoa(id), "")
+	if w.Code != 404 {
+		t.Fatalf("cross-user archived detail=%d", w.Code)
 	}
 }
 func TestJobCommentSendsToActiveSessionAndRecordsEvent(t *testing.T) {
@@ -445,7 +458,7 @@ func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
 	var made map[string]any
 	json.Unmarshal(w.Body.Bytes(), &made)
 	id := int64(made["id"].(float64))
-	a.DB.Exec("UPDATE jobs SET state='blocked' WHERE id=?", id)
+	a.DB.Exec("UPDATE jobs SET state='in_progress' WHERE id=?", id)
 	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,?,'running')", id, "missing-session")
 
 	a.reconcile()
@@ -455,6 +468,11 @@ func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
 	a.DB.QueryRow("SELECT warning FROM jobs WHERE id=?", id).Scan(&warning)
 	if runStatus != "blocked" || warning != "Execution session missing after server restart" {
 		t.Fatalf("status=%q warning=%q", runStatus, warning)
+	}
+	var statusEvents int
+	a.DB.QueryRow(`SELECT count(*) FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? AND e.kind='status' AND e.content LIKE '%in_progress%blocked%'`, id).Scan(&statusEvents)
+	if statusEvents != 1 {
+		t.Fatalf("blocked status timeline events=%d", statusEvents)
 	}
 }
 

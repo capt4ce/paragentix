@@ -22,6 +22,11 @@ export async function archiveColumn(id: number) {
 }
 export const eventSide = (kind: string) =>
   kind === "comment" || kind === "input" ? "sent" : "received";
+export const eventLabel = (kind: string) => ({
+  status: "Status",
+  retry: "Retry",
+  archive: "Archive",
+}[kind] ?? (kind === "error" ? "Error" : "Agent"));
 const timelineLinkPattern = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
 const trailingUrlPunctuation = /[.,!?;:)\]}]+$/;
 export function TimelineContent({ content }: { content: string }) {
@@ -171,19 +176,19 @@ function JobDetail({
         </button>
       )}
       {j.warning && <p role="alert">{j.warning}</p>}
-      <div className="job-inspector-actions">
+      {!j.archived && <div className="job-inspector-actions">
         <button onClick={() => action("retry")}>Retry job</button>
         <button
           className="danger"
           onClick={async () => {
             await api("/jobs/" + job.id, { method: "DELETE" });
             refresh();
-            close();
+            setD(jobDetail(await api("/jobs/" + job.id)));
           }}
         >
           Archive job
         </button>
-      </div>
+      </div>}
       <h3>Timeline</h3>
       <div className="conversation">
         {j.events?.length ? (
@@ -192,9 +197,7 @@ function JobDetail({
               <small>
                 {eventSide(e.kind) === "sent"
                   ? "You"
-                  : e.kind === "error"
-                    ? "Error"
-                    : "Agent"}
+                  : eventLabel(e.kind)}
               </small>
               <span><TimelineContent content={e.content} /></span>
             </div>

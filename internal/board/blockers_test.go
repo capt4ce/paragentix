@@ -143,7 +143,7 @@ func TestStartFailsClosedWithoutSelectedProject(t *testing.T) {
 		t.Fatalf("state=%q warning=%q err=%v", state, warning, err)
 	}
 	var runs int
-	a.DB.QueryRow(`SELECT count(*) FROM job_runs WHERE job_id=91`).Scan(&runs)
+	a.DB.QueryRow(`SELECT count(*) FROM job_runs WHERE job_id=91 AND tmux_session<>'job-history'`).Scan(&runs)
 	if runs != 0 {
 		t.Fatalf("started %d runs from caller root", runs)
 	}

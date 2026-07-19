@@ -161,6 +161,12 @@ describe("chat conversations", () => {
     expect(eventSide("output")).toBe("received");
     expect(eventSide("error")).toBe("received");
   });
+  it("labels job lifecycle events in the timeline", async () => {
+    const { eventLabel } = await import("./src");
+    expect(eventLabel("status")).toBe("Status");
+    expect(eventLabel("retry")).toBe("Retry");
+    expect(eventLabel("archive")).toBe("Archive");
+  });
   it("labels blocked-session input and gives the timeline room", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     const css = readFileSync("src/index.css", "utf8");

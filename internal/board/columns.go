@@ -68,7 +68,7 @@ func (a *App) columns(w http.ResponseWriter, r *http.Request, board int64) {
 		}
 		rows.Close()
 		for _, c := range out {
-			jr, _ := a.DB.Query(`SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id JOIN columns c ON c.lane_id=j.lane_id WHERE c.id=? AND c.board_id=? ORDER BY j.position`, c["id"], board)
+			jr, _ := a.DB.Query(`SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id JOIN columns c ON c.lane_id=j.lane_id WHERE c.id=? AND c.board_id=? AND j.archived=0 ORDER BY j.position`, c["id"], board)
 			jobs := []Job{}
 			for jr.Next() {
 				var j Job

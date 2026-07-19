@@ -23,6 +23,7 @@ CREATE INDEX IF NOT EXISTS notifications_user_id ON notifications(user_id,id DES
 		return e
 	}
 	_, _ = a.DB.Exec("ALTER TABLE jobs ADD COLUMN pending_comment TEXT NOT NULL DEFAULT ''")
+	_, _ = a.DB.Exec("ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 	_, e = a.DB.Exec(`CREATE TABLE IF NOT EXISTS workspaces(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,root TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,root));
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,workspace_id INTEGER NOT NULL REFERENCES workspaces ON DELETE CASCADE,name TEXT NOT NULL,directory TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(workspace_id,directory));
 CREATE TABLE IF NOT EXISTS custom_cli_tools(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,argv_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name));
@@ -92,8 +93,8 @@ ALTER TABLE user_settings_new RENAME TO user_settings;`); err != nil {
 		}
 	}
 	if cliTool != 0 {
-		if _, err = tx.Exec(`CREATE TABLE jobs_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',UNIQUE(lane_id,position));
-INSERT INTO jobs_new(id,user_id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment) SELECT id,user_id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment FROM jobs;
+		if _, err = tx.Exec(`CREATE TABLE jobs_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',archived INTEGER NOT NULL DEFAULT 0,UNIQUE(lane_id,position));
+INSERT INTO jobs_new(id,user_id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment,archived) SELECT id,user_id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment,archived FROM jobs;
 DROP TABLE jobs;
 ALTER TABLE jobs_new RENAME TO jobs;`); err != nil {
 			return err

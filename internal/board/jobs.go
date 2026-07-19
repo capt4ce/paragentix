@@ -1,6 +1,7 @@
 package board
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -31,7 +32,7 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
-		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,j.position", l.ID)
+		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? AND j.archived=0 ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,j.position", l.ID)
 		for jr.Next() {
 			var j Job
 			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
@@ -120,7 +121,8 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var state string
-	e = a.DB.QueryRow("SELECT state FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state)
+	var archived bool
+	e = a.DB.QueryRow("SELECT state,archived FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state, &archived)
 	if e != nil {
 		fail(w, 404, "not found")
 		return
@@ -136,16 +138,17 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == "DELETE" {
+			if archived {
+				fail(w, 409, "job is already archived")
+				return
+			}
 			exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
 			tx, e := a.DB.Begin()
 			if e == nil {
-				_, e = tx.Exec("DELETE FROM job_events WHERE job_run_id IN (SELECT id FROM job_runs WHERE job_id=?)", id)
+				e = appendJobEventTx(tx, id, "archive", "Job archived")
 			}
 			if e == nil {
-				_, e = tx.Exec("DELETE FROM job_runs WHERE job_id=?", id)
-			}
-			if e == nil {
-				_, e = tx.Exec("DELETE FROM jobs WHERE id=? AND user_id=?", id, uid(r))
+				_, e = tx.Exec("UPDATE jobs SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?", id, uid(r))
 			}
 			if e == nil {
 				e = tx.Commit()
@@ -162,6 +165,10 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		if archived {
+			fail(w, 409, "job is archived")
+			return
+		}
 		switch parts[1] {
 		case "reorder":
 			a.reorder(w, r, id, state)
@@ -182,9 +189,50 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	}
 	fail(w, 405, "method not allowed")
 }
+
+func appendJobEventTx(tx *sql.Tx, job int64, kind, content string) error {
+	var run int64
+	err := tx.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", job).Scan(&run)
+	if err == sql.ErrNoRows {
+		var attempt int
+		if err = tx.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", job).Scan(&attempt); err != nil {
+			return err
+		}
+		res, insertErr := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,?,?,'done',CURRENT_TIMESTAMP)", job, attempt, "job-history")
+		if insertErr != nil {
+			return insertErr
+		}
+		run, err = res.LastInsertId()
+	}
+	if err != nil {
+		return err
+	}
+	var seq int
+	if err = tx.QueryRow("SELECT COALESCE(MAX(sequence),0)+1 FROM job_events WHERE job_run_id=?", run).Scan(&seq); err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,?,?,?)", run, seq, kind, content)
+	return err
+}
+
+func (a *App) appendJobEvent(job int64, kind, content string) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = appendJobEventTx(tx, job, kind, content); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func statusContent(old, next string) string {
+	return fmt.Sprintf("Status changed from %s to %s", old, next)
+}
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
-	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
+	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
 	var ev []map[string]any
 	rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()
@@ -265,10 +313,15 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 			return
 		}
 		a.DB.Exec("UPDATE jobs SET state='todo',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.appendJobEvent(id, "status", statusContent(state, "todo"))
 		exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
 	} else if act == "retry" {
 		exec.Command("tmux", "kill-session", "-t", fmt.Sprintf("agent-job-%d", id)).Run()
 		a.DB.Exec("UPDATE jobs SET state='todo',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		if state != "todo" {
+			a.appendJobEvent(id, "status", statusContent(state, "todo"))
+		}
+		a.appendJobEvent(id, "retry", "Job retried")
 	} else {
 		if state != "blocked" {
 			fail(w, 409, "job is not blocked")
@@ -289,6 +342,7 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 			exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("agent-job-%d", id), "Enter").Run()
 		}
 		a.DB.Exec("UPDATE jobs SET state='todo',updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		a.appendJobEvent(id, "status", statusContent(state, "todo"))
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 	a.signal()
