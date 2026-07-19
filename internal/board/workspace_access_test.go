@@ -2,13 +2,35 @@ package board
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestEmbeddedFrontendIncludesWorkspaceUserStatuses(t *testing.T) {
+	index, err := fs.ReadFile(web, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`assets/(index-[^"']+\.js)`).FindSubmatch(index)
+	if len(match) != 2 {
+		t.Fatalf("embedded frontend index has no JavaScript asset: %s", index)
+	}
+	asset, err := fs.ReadFile(web, "web/assets/"+string(match[1]))
+	if err != nil {
+		t.Fatalf("embedded frontend asset %q: %v", match[1], err)
+	}
+	for _, label := range []string{"Invited", "Member"} {
+		if !strings.Contains(string(asset), label) {
+			t.Fatalf("embedded frontend asset %q does not include workspace user status %q", match[1], label)
+		}
+	}
+}
 
 type testMailer struct{ body *string }
 
