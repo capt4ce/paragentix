@@ -87,15 +87,25 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 		return
 	}
 	var x struct{ Comment string }
-	if decode(r, &x) != nil {
+	var attachments []jobAttachment
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		var err error
+		attachments, err = parseAttachments(w, r)
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		x.Comment = r.FormValue("comment")
+	} else if decode(r, &x) != nil {
 		fail(w, 400, "invalid request")
 		return
 	}
 	x.Comment = strings.TrimSpace(x.Comment)
-	if x.Comment == "" || len(x.Comment) > 4000 {
+	if (x.Comment == "" && len(attachments) == 0) || len(x.Comment) > 4000 {
 		fail(w, 400, "comment must be 1-4000 characters")
 		return
 	}
+	x.Comment = appendAttachmentContext(x.Comment, attachments)
 	if state == "done" {
 		var run int64
 		if e := a.DB.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", id).Scan(&run); e != nil {

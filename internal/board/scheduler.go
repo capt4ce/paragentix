@@ -130,10 +130,7 @@ func (a *App) start(id int64, task, done, root string) {
 func initialHermesPrompt(projectName, projectDirectory, task, done string, attachmentSets ...[]jobAttachment) string {
 	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
 	if len(attachmentSets) > 0 && len(attachmentSets[0]) > 0 {
-		prompt += "\n\nAdditional file context:"
-		for _, attachment := range attachmentSets[0] {
-			prompt += fmt.Sprintf("\n\nAttached file: %s\n```\n%s\n```", attachment.Name, attachment.Content)
-		}
+		prompt = appendAttachmentContext(prompt, attachmentSets[0])
 	}
 	return prompt
 }

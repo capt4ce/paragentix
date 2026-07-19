@@ -64,7 +64,9 @@ export const canComment = (state: string) =>
   state === "in_progress" || state === "blocked" || state === "done";
 export const canEditDoneDefinition = (job: any) =>
   job.state === "todo" && job.attempt_count === 0;
-export const jobDetail = (x: any) => ({ ...x.job, events: x.events, session_id: x.session_id });
+export const jobDetail = (x: any) => x.job
+  ? { ...x.job, events: x.events, session_id: x.session_id }
+  : x;
 export const columnPatch = (form: any) => ({
   name: form.name,
   projectId: Number(form.projectId),
@@ -97,6 +99,7 @@ export function InvitationDialog({ invitation, close, accept }: { invitation: an
   </DialogShell>;
 }
 export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[] }): RequestInit {
+	validateAttachments(form.files || []);
   if (form.files?.length) {
     const body = new FormData();
     body.set("task", form.task);
@@ -108,6 +111,20 @@ export function jobCreationRequest(form: { task: string; doneDefinition?: string
     method: "POST",
     body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition }),
   };
+}
+export const MAX_ATTACHMENTS = 20;
+export const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
+export function validateAttachments(files: File[]) {
+  if (files.length > MAX_ATTACHMENTS) throw Error(`At most ${MAX_ATTACHMENTS} files may be attached`);
+  if (files.some((file) => file.size > MAX_ATTACHMENT_SIZE)) throw Error("Each attachment must be 20 MB or smaller");
+}
+export function replyRequest(comment: string, files: File[]): RequestInit {
+  validateAttachments(files);
+  if (!files.length) return { method: "POST", body: JSON.stringify({ comment }) };
+  const body = new FormData();
+  body.set("comment", comment);
+  files.forEach((file) => body.append("files", file));
+  return { method: "POST", body };
 }
 export function JobCard({
   job,
@@ -214,6 +231,7 @@ function JobDetail({
     [done, setDone] = useState(job.done_definition),
     [input, setInput] = useState(""),
     [comment, setComment] = useState(""),
+    [commentFiles, setCommentFiles] = useState<File[]>([]),
     [sending, setSending] = useState(false),
     [commentError, setCommentError] = useState(""),
     j = d ?? job;
@@ -301,9 +319,21 @@ function JobDetail({
               className={buttonVariants({ variant: "outline", size: "icon" })}
               aria-label="Add files"
               title="Add files"
+              onClick={() => document.getElementById(`reply-files-${job.id}`)?.click()}
             >
               <Paperclip />
             </button>
+            <input
+              id={`reply-files-${job.id}`}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                const files = Array.from(e.target.files || []);
+                try { validateAttachments(files); setCommentFiles(files); setCommentError(""); }
+                catch (error) { setCommentFiles([]); setCommentError(String(error)); }
+              }}
+            />
             <textarea
               aria-label="Reply to session"
               maxLength={4000}
@@ -317,16 +347,14 @@ function JobDetail({
               aria-label={sending ? "Sending reply" : "Send reply"}
               title="Send reply"
               aria-busy={sending || undefined}
-              disabled={sending || !comment.trim()}
+              disabled={sending || (!comment.trim() && !commentFiles.length)}
               onClick={async () => {
                 setSending(true);
                 setCommentError("");
                 try {
-                  await api(`/jobs/${job.id}/comment`, {
-                    method: "POST",
-                    body: JSON.stringify({ comment }),
-                  });
+                  await api(`/jobs/${job.id}/comment`, replyRequest(comment, commentFiles));
                   setComment("");
+                  setCommentFiles([]);
                   setD(jobDetail(await api("/jobs/" + job.id)));
                 } catch (e) {
                   setCommentError(String(e));
@@ -338,6 +366,7 @@ function JobDetail({
               <Send />
             </button>
           </div>
+          {commentFiles.length > 0 && <small>{commentFiles.length} file{commentFiles.length === 1 ? "" : "s"} attached</small>}
           {commentError && <p role="alert">{commentError}</p>}
         </div>
       )}
@@ -1191,7 +1220,7 @@ export function App() {
                         setForm({ ...form, files: Array.from(e.target.files || []) })
                       }
                     />
-                    <small>Up to 5 UTF-8 text files, 1 MB each.</small>
+                    <small>Up to 20 files of any type, 20 MB each.</small>
                   </label>
                 </>
               ) : (

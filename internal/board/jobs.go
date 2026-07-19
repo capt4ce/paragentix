@@ -3,23 +3,10 @@ package board
 import (
 	"database/sql"
 	"fmt"
-	"io"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"unicode/utf8"
 )
-
-const (
-	maxJobAttachments = 5
-	maxAttachmentSize = 1 << 20
-	maxJobUploadSize  = maxJobAttachments*maxAttachmentSize + (64 << 10)
-)
-
-type jobAttachment struct {
-	Name, Content string
-}
 
 func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
@@ -113,42 +100,13 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 	var x struct{ Task, DoneDefinition string }
 	var attachments []jobAttachment
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		r.Body = http.MaxBytesReader(w, r.Body, maxJobUploadSize)
-		if err := r.ParseMultipartForm(maxJobUploadSize); err != nil {
-			fail(w, 400, "upload is too large or invalid")
+		var err error
+		attachments, err = parseAttachments(w, r)
+		if err != nil {
+			fail(w, 400, err.Error())
 			return
 		}
 		x.Task, x.DoneDefinition = r.FormValue("task"), r.FormValue("doneDefinition")
-		files := r.MultipartForm.File["files"]
-		if len(files) > maxJobAttachments {
-			fail(w, 400, "at most 5 files may be attached")
-			return
-		}
-		seen := map[string]bool{}
-		for _, header := range files {
-			name := header.Filename
-			if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, "\x00\r\n") || seen[name] {
-				fail(w, 400, "attachment names must be unique, valid file names")
-				return
-			}
-			seen[name] = true
-			file, err := header.Open()
-			if err != nil {
-				fail(w, 400, "could not read attachment")
-				return
-			}
-			content, err := io.ReadAll(io.LimitReader(file, maxAttachmentSize+1))
-			file.Close()
-			if err != nil || len(content) > maxAttachmentSize {
-				fail(w, 400, "each attachment must be 1 MB or smaller")
-				return
-			}
-			if !utf8.Valid(content) || strings.IndexByte(string(content), 0) >= 0 {
-				fail(w, 400, "attachments must be UTF-8 text files")
-				return
-			}
-			attachments = append(attachments, jobAttachment{Name: name, Content: string(content)})
-		}
 	} else if decode(r, &x) != nil {
 		fail(w, 400, "invalid request")
 		return

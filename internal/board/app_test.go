@@ -33,7 +33,7 @@ func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 	form := multipart.NewWriter(&body)
 	form.WriteField("task", "Review these notes")
 	form.WriteField("doneDefinition", "Summarize both files")
-	for name, content := range map[string]string{"notes.txt": "first note", "config.json": `{"enabled":true}`} {
+	for name, content := range map[string]string{"notes.txt": "first note", "config.json": `{"enabled":true}`, "image.bin": string([]byte{0xff, 0x00, 0x01})} {
 		part, partErr := form.CreateFormFile("files", name)
 		if partErr != nil {
 			t.Fatal(partErr)
@@ -66,7 +66,7 @@ func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 		attachments = append(attachments, attachment)
 	}
 	prompt := initialHermesPrompt("Project", "/project", "Review these notes", "Summarize both files", attachments)
-	for _, want := range []string{"Attached file: config.json\n```\n{\"enabled\":true}\n```", "Attached file: notes.txt\n```\nfirst note\n```"} {
+	for _, want := range []string{"Attached file: config.json\n```\n{\"enabled\":true}\n```", "Attached file: notes.txt\n```\nfirst note\n```", "Attached file: image.bin\n```\nBase64-encoded content:\n/wAB\n```"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
@@ -187,7 +187,7 @@ func TestArchiveColumnArchivesItsJobsAtomically(t *testing.T) {
 	}
 }
 
-func TestCreateJobRejectsInvalidAttachmentsWithoutCreatingJob(t *testing.T) {
+func TestCreateJobRejectsOversizedAttachmentsWithoutCreatingJob(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -201,21 +201,88 @@ func TestCreateJobRejectsInvalidAttachmentsWithoutCreatingJob(t *testing.T) {
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	form.WriteField("task", "Do not persist")
-	part, _ := form.CreateFormFile("files", "binary.dat")
-	part.Write([]byte{0xff, 0xfe})
+	part, _ := form.CreateFormFile("files", "large.dat")
+	part.Write(make([]byte, maxAttachmentSize+1))
 	form.Close()
 	r := httptest.NewRequest(http.MethodPost, "/api/lanes/"+itoa(lane)+"/jobs", &body)
 	r.Header.Set("Content-Type", form.FormDataContentType())
 	r.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "UTF-8 text") {
-		t.Fatalf("invalid attachment: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "20 MB") {
+		t.Fatalf("oversized attachment: %d %s", w.Code, w.Body.String())
 	}
 	var jobs int
 	a.DB.QueryRow("SELECT count(*) FROM jobs WHERE lane_id=?", lane).Scan(&jobs)
 	if jobs != 0 {
 		t.Fatalf("invalid upload created %d jobs", jobs)
+	}
+}
+
+func TestCreateJobRejectsTooManyAttachments(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, cookie := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"many-attachments@example.com","password":"password1"}`)
+	var lane int64
+	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=(SELECT id FROM users WHERE email='many-attachments@example.com')").Scan(&lane)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("task", "Do not persist")
+	for i := 0; i < maxAttachments+1; i++ {
+		part, _ := form.CreateFormFile("files", fmt.Sprintf("%d.bin", i))
+		part.Write([]byte{byte(i)})
+	}
+	form.Close()
+	r := httptest.NewRequest(http.MethodPost, "/api/lanes/"+itoa(lane)+"/jobs", &body)
+	r.Header.Set("Content-Type", form.FormDataContentType())
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "at most 20 files") {
+		t.Fatalf("too many attachments: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestReplyAcceptsMultipartFiles(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"reply-files@example.com","password":"password1"}`)
+	var lane, user int64
+	a.DB.QueryRow("SELECT l.id,l.user_id FROM lanes l JOIN users u ON u.id=l.user_id WHERE u.email=?", "reply-files@example.com").Scan(&lane, &user)
+	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES(?,?,?,'done',0)", user, lane, "review")
+	job, _ := res.LastInsertId()
+	res, _ = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'finished','done')", job)
+	run, _ := res.LastInsertId()
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("comment", "Inspect this")
+	part, _ := form.CreateFormFile("files", "sample.bin")
+	part.Write([]byte{0xff, 0x00, 0x01})
+	form.Close()
+	r := httptest.NewRequest(http.MethodPost, "/api/jobs/"+itoa(job)+"/comment", &body)
+	r.Header.Set("Content-Type", form.FormDataContentType())
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reply: %d %s", w.Code, w.Body.String())
+	}
+	var content string
+	if err = a.DB.QueryRow("SELECT content FROM job_events WHERE job_run_id=? AND kind='comment'", run).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "Attached file: sample.bin\n```\nBase64-encoded content:\n/wAB") {
+		t.Fatalf("reply content: %q", content)
 	}
 }
 

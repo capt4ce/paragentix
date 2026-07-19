@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -75,6 +75,10 @@ describe("project navigation and jobs", () => {
 		expect(body.get("task")).toBe("Review");
 		expect(body.getAll("files")).toEqual(files);
 		expect(request.headers).toBeUndefined();
+	});
+	it("enforces the shared file count and per-file size limits", () => {
+		expect(() => validateAttachments(Array.from({ length: 21 }, (_, i) => new File(["x"], `${i}.bin`)))).toThrow("At most 20 files");
+		expect(() => validateAttachments([new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.bin")])).toThrow("20 MB");
 	});
   it("restores project list and detail URLs", () => {
     expect(parseLocation("?projects=1")).toEqual({ view: "projects" });
@@ -246,6 +250,13 @@ describe("board job creation", () => {
   });
 });
 describe("job comments", () => {
+	it("builds multipart replies with files", () => {
+		const file = new File([new Uint8Array([255, 0])], "sample.bin");
+		const request = replyRequest("Inspect", [file]);
+		expect(request.body).toBeInstanceOf(FormData);
+		expect((request.body as FormData).get("comment")).toBe("Inspect");
+		expect((request.body as FormData).getAll("files")).toEqual([file]);
+	});
   it("uses a compact accessible reply composer", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     expect(app).toContain('placeholder="Reply to session"');
@@ -262,16 +273,15 @@ describe("job comments", () => {
   });
   it("unwraps the job detail API response", async () => {
     const { jobDetail } = await import("./src");
-    expect(
-      jobDetail({
-        job: { state: "blocked", task: "Fix it" },
-        events: [{ kind: "output", content: "waiting" }],
-        session_id: "session-123",
-      }),
-    ).toEqual({
-      state: "blocked",
+    const detail = jobDetail({
+      job: { state: "done", task: "Fix it" },
+      events: [{ kind: "output", content: "finished" }],
+      session_id: "session-123",
+    });
+    expect(jobDetail(detail)).toEqual({
+      state: "done",
       task: "Fix it",
-      events: [{ kind: "output", content: "waiting" }],
+      events: [{ kind: "output", content: "finished" }],
       session_id: "session-123",
     });
   });
