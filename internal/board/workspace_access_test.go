@@ -363,6 +363,101 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMembersCanArchiveJobsAndColumns(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, owner := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"archive-owner@x.test","password":"password1"}`)
+	_, member := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"archive-member@x.test","password":"password1"}`)
+	_, outsider := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"archive-outsider@x.test","password":"password1"}`)
+
+	var ownerID, memberID, workspaceID, boardID, projectID int64
+	if err = a.DB.QueryRow(`SELECT u.id,b.workspace_id,b.id,p.id FROM users u JOIN boards b ON b.user_id=u.id JOIN projects p ON p.workspace_id=b.workspace_id WHERE u.email=?`, "archive-owner@x.test").Scan(&ownerID, &workspaceID, &boardID, &projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DB.QueryRow(`SELECT id FROM users WHERE email=?`, "archive-member@x.test").Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'member')`, workspaceID, memberID); err != nil {
+		t.Fatal(err)
+	}
+
+	createColumn := func(name string) (int64, int64) {
+		t.Helper()
+		w, _ := req(t, h, owner, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"`+name+`","projectId":`+itoa(projectID)+`,"worktreeEnabled":false}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create column: %d %s", w.Code, w.Body.String())
+		}
+		var column map[string]any
+		json.Unmarshal(w.Body.Bytes(), &column)
+		columnID := int64(column["id"].(float64))
+		var laneID int64
+		if err := a.DB.QueryRow(`SELECT lane_id FROM columns WHERE id=?`, columnID).Scan(&laneID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.DB.Exec(`UPDATE lanes SET paused=1 WHERE id=?`, laneID); err != nil {
+			t.Fatal(err)
+		}
+		return columnID, laneID
+	}
+	createJob := func(cookie *http.Cookie, columnID int64) int64 {
+		t.Helper()
+		w, _ := req(t, h, cookie, "POST", "/api/columns/"+itoa(columnID)+"/jobs", `{"task":"Archive me"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create job: %d %s", w.Code, w.Body.String())
+		}
+		var job map[string]any
+		json.Unmarshal(w.Body.Bytes(), &job)
+		return int64(job["id"].(float64))
+	}
+	assertArchived := func(table string, id int64, want bool) {
+		t.Helper()
+		var archived bool
+		if err := a.DB.QueryRow(`SELECT archived FROM `+table+` WHERE id=?`, id).Scan(&archived); err != nil || archived != want {
+			t.Fatalf("%s %d archived=%t, want %t (err=%v)", table, id, archived, want, err)
+		}
+	}
+
+	columnID, _ := createColumn("Member job archive")
+	jobID := createJob(owner, columnID)
+	w, _ := req(t, h, outsider, "DELETE", "/api/jobs/"+itoa(jobID), "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("outsider archived job: %d %s", w.Code, w.Body.String())
+	}
+	assertArchived("jobs", jobID, false)
+	w, _ = req(t, h, member, "DELETE", "/api/jobs/"+itoa(jobID), "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("member archive job: %d %s", w.Code, w.Body.String())
+	}
+	assertArchived("jobs", jobID, true)
+
+	columnID, _ = createColumn("Owner job archive")
+	jobID = createJob(member, columnID)
+	w, _ = req(t, h, owner, "DELETE", "/api/jobs/"+itoa(jobID), "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("owner archive member job: %d %s", w.Code, w.Body.String())
+	}
+	assertArchived("jobs", jobID, true)
+
+	columnID, _ = createColumn("Member column archive")
+	jobID = createJob(owner, columnID)
+	w, _ = req(t, h, outsider, "DELETE", "/api/columns/"+itoa(columnID), "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("outsider archived column: %d %s", w.Code, w.Body.String())
+	}
+	assertArchived("columns", columnID, false)
+	assertArchived("jobs", jobID, false)
+	w, _ = req(t, h, member, "DELETE", "/api/columns/"+itoa(columnID), "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("member archive column: %d %s", w.Code, w.Body.String())
+	}
+	assertArchived("columns", columnID, true)
+	assertArchived("jobs", jobID, true)
+}
+
 func TestWorkspaceUsersIncludesPendingInvitationsAndMembers(t *testing.T) {
 	root := t.TempDir()
 	a, err := Open(filepath.Join(t.TempDir(), "db"), root)

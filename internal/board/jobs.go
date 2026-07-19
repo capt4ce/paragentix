@@ -156,12 +156,18 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	var state string
 	var archived bool
 	var attempts int
-	e = a.DB.QueryRow("SELECT state,archived,attempt_count FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state, &archived, &attempts)
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 1 && r.Method == "DELETE" {
+		e = a.DB.QueryRow(`SELECT j.state,j.archived,j.attempt_count FROM jobs j WHERE j.id=? AND (j.user_id=? OR EXISTS(
+			SELECT 1 FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id
+			WHERE c.lane_id=j.lane_id AND m.user_id=?))`, id, uid(r), uid(r)).Scan(&state, &archived, &attempts)
+	} else {
+		e = a.DB.QueryRow("SELECT state,archived,attempt_count FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state, &archived, &attempts)
+	}
 	if e != nil {
 		fail(w, 404, "not found")
 		return
 	}
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) == 1 {
 		if r.Method == "GET" {
 			a.jobDetail(w, id)
@@ -182,7 +188,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 				e = appendJobEventTx(tx, id, "archive", "Job archived")
 			}
 			if e == nil {
-				_, e = tx.Exec("UPDATE jobs SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?", id, uid(r))
+				_, e = tx.Exec("UPDATE jobs SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 			}
 			if e == nil {
 				e = tx.Commit()
