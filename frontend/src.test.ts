@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell, TimelineContent } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -28,6 +28,19 @@ describe("workspace URL restoration", () => {
   it("uses the canonical board history location for restoration", () => {
     expect(boardLocation(42)).toBe("?board=42");
     expect(parseLocation(boardLocation(42))).toEqual({ view: "board", boardId: 42 });
+  });
+});
+describe("project navigation and jobs", () => {
+  it("restores project list and detail URLs", () => {
+    expect(parseLocation("?projects=1")).toEqual({ view: "projects" });
+    expect(projectLocation(12)).toBe("?project=12");
+    expect(parseLocation("?project=12")).toEqual({ view: "project", projectId: 12 });
+  });
+  it("filters status and searches task text case-insensitively", () => {
+    const jobs = [{ task: "Fix Login", state: "todo" }, { task: "Ship dashboard", state: "done" }];
+    expect(filterProjectJobs(jobs, "todo", " login ")).toEqual([jobs[0]]);
+    expect(filterProjectJobs(jobs, "all", "DASH")).toEqual([jobs[1]]);
+    expect(filterProjectJobs(jobs, "blocked", "")).toEqual([]);
   });
 });
 describe("column edit", () => {

@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
-import { boardLocation, parseLocation } from "@/lib/routes";
+import { boardLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
 import { Button } from "@/components/ui/button";
@@ -63,6 +63,12 @@ export const columnPatch = (form: any) => ({
   projectId: Number(form.projectId),
 });
 export const columnAnchor = (id: number) => `column-${id}`;
+export const filterProjectJobs = (jobs: any[], status: string, search: string) => {
+  const query = search.trim().toLocaleLowerCase();
+  return jobs.filter((job) =>
+    (status === "all" || job.state === status) &&
+    (!query || job.task.toLocaleLowerCase().includes(query)));
+};
 export function JobCard({
   job,
   open,
@@ -282,6 +288,8 @@ export function App() {
     [notifications, setNotifications] = useState<any[]>([]),
     [notificationMore, setNotificationMore] = useState(false),
     [unread, setUnread] = useState(0),
+    [jobStatus, setJobStatus] = useState("all"),
+    [jobSearch, setJobSearch] = useState(""),
     [job, setJob] = useState<any>();
   const menu = useRef<HTMLDetailsElement>(null);
   const load = async () => {
@@ -310,6 +318,13 @@ export function App() {
               `/workspaces/${route.workspaceId}/${route.tab!.toLowerCase()}`,
             ),
       );
+    } else if (route.view === "projects") {
+      setItems(await api("/projects"));
+      setDetail(undefined);
+    } else if (route.view === "project") {
+      setDetail(await api("/projects/" + route.projectId));
+      setJobStatus("all");
+      setJobSearch("");
     }
   };
   useEffect(() => {
@@ -533,6 +548,17 @@ export function App() {
             <div className="accountmenu">
               <strong>{me.email}</strong>
               <button
+                onClick={async () => {
+                  closeDetails(menu);
+                  setItems(await api("/projects"));
+                  setDetail(undefined);
+                  setView("projects");
+                  history.pushState({}, "", "?projects=1");
+                }}
+              >
+                Projects
+              </button>
+              <button
                 onClick={() => {
                   closeDetails(menu);
                   setView("workspaces");
@@ -571,6 +597,39 @@ export function App() {
           </details>
         </div>
       </header>
+      {view === "projects" && (
+        <main className="page">
+          <div className="pagehead"><h2>Projects</h2></div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Project</th><th>Workspace</th><th>Directory</th><th>Columns</th><th>Jobs</th></tr></thead>
+              <tbody>{items.map((p) => (
+                <tr key={p.id} className="clickable-row" onClick={() => {
+                  setView("project");
+                  history.pushState({}, "", projectLocation(p.id));
+                  api(`/projects/${p.id}`).then(setDetail).catch((e) => setError(String(e)));
+                  setJobStatus("all"); setJobSearch("");
+                }}>
+                  <td><button className="link">{p.name}</button></td><td>{p.workspaceName}</td><td><code>{p.directory}</code></td><td>{p.columnCount}</td><td>{p.jobCount}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </main>
+      )}
+      {view === "project" && detail && (
+        <main className="page">
+          <button className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); history.pushState({}, "", "?projects=1"); }}>← Projects</button>
+          <section className="panel project-details"><h2>{detail.name}</h2><span>Workspace: {detail.workspaceName}</span><code>{detail.directory}</code></section>
+          <div className="pagehead"><h3>Jobs</h3><div className="job-filters">
+            <Input aria-label="Search job tasks" placeholder="Search task…" value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} />
+            <select aria-label="Filter jobs by status" value={jobStatus} onChange={(e) => setJobStatus(e.target.value)}><option value="all">All statuses</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="blocked">Blocked</option><option value="done">Done</option></select>
+          </div></div>
+          <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Board / column</th><th>Updated</th></tr></thead><tbody>
+            {filterProjectJobs(detail.jobs, jobStatus, jobSearch).map((j) => <tr key={j.id}><td>{j.task}</td><td><StatusBadge state={j.state} /></td><td>{j.boardName} / {j.columnName}</td><td>{j.updated_at}</td></tr>)}
+          </tbody></table>{!filterProjectJobs(detail.jobs, jobStatus, jobSearch).length && <p className="empty">No jobs match these filters.</p>}</div>
+        </main>
+      )}
       {view === "workspaces" && (
         <main className="page">
           <div className="pagehead">

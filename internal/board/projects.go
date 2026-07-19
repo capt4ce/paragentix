@@ -57,6 +57,29 @@ func (a *App) projectDirectoryConflict(workspaceID int64, directory string) stri
 	return name
 }
 func (a *App) projects(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		rows, e := a.DB.Query(`SELECT p.id,p.name,p.directory,w.id,w.name,
+			(SELECT count(*) FROM columns c WHERE c.project_id=p.id AND c.archived=0),
+			(SELECT count(*) FROM jobs j JOIN columns c ON c.lane_id=j.lane_id WHERE c.project_id=p.id AND c.archived=0 AND j.archived=0)
+			FROM projects p JOIN workspaces w ON w.id=p.workspace_id JOIN workspace_members m ON m.workspace_id=w.id
+			WHERE m.user_id=? ORDER BY w.name,p.name`, uid(r))
+		if e != nil {
+			fail(w, 500, "projects unavailable")
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var id, wid int64
+			var name, directory, workspace string
+			var columns, jobs int
+			if rows.Scan(&id, &name, &directory, &wid, &workspace, &columns, &jobs) == nil {
+				out = append(out, map[string]any{"id": id, "name": name, "directory": directory, "workspaceId": wid, "workspaceName": workspace, "columnCount": columns, "jobCount": jobs})
+			}
+		}
+		jsonOut(w, 200, out)
+		return
+	}
 	if r.Method != "POST" {
 		fail(w, 405, "method not allowed")
 		return
@@ -128,7 +151,26 @@ func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
-		jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory})
+		rows, queryErr := a.DB.Query(`SELECT j.id,j.task,j.state,j.attempt_count,j.created_at,j.updated_at,u.email,b.name,c.name
+			FROM jobs j JOIN users u ON u.id=j.user_id JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id
+			WHERE c.project_id=? AND c.archived=0 AND j.archived=0 ORDER BY j.updated_at DESC,j.id DESC`, id)
+		if queryErr != nil {
+			fail(w, 500, "project unavailable")
+			return
+		}
+		defer rows.Close()
+		jobs := []map[string]any{}
+		for rows.Next() {
+			var jobID int64
+			var attempts int
+			var task, state, created, updated, creator, board, column string
+			if rows.Scan(&jobID, &task, &state, &attempts, &created, &updated, &creator, &board, &column) == nil {
+				jobs = append(jobs, map[string]any{"id": jobID, "task": task, "state": state, "attempt_count": attempts, "created_at": created, "updated_at": updated, "creatorName": creator, "boardName": board, "columnName": column})
+			}
+		}
+		var workspace string
+		_ = a.DB.QueryRow(`SELECT name FROM workspaces WHERE id=?`, wid).Scan(&workspace)
+		jsonOut(w, 200, map[string]any{"id": id, "name": name, "directory": directory, "workspaceId": wid, "workspaceName": workspace, "role": role, "jobs": jobs})
 		return
 	}
 	if r.Method != "PATCH" {

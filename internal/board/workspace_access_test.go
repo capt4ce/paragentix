@@ -117,6 +117,18 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &x)
 	cid := int64(x["id"].(float64))
+	w, _ = req(t, h, owner, "POST", "/api/columns/"+itoa(cid)+"/jobs", `{"task":"Fix project search","doneDefinition":"Tests pass"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("project job %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, member, "GET", "/api/projects", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"App"`) || !strings.Contains(w.Body.String(), `"jobCount":1`) {
+		t.Fatalf("member project list %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, member, "GET", "/api/projects/"+itoa(pid), "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"task":"Fix project search"`) || !strings.Contains(w.Body.String(), `"boardName":"Board"`) || !strings.Contains(w.Body.String(), `"columnName":"Todo"`) {
+		t.Fatalf("member project detail %d %s", w.Code, w.Body.String())
+	}
 	w, _ = req(t, h, member, "GET", "/api/boards/"+itoa(bid)+"/columns", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"projectName":"App"`) {
 		t.Fatalf("member columns %d %s", w.Code, w.Body.String())
