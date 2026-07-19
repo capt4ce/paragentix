@@ -55,6 +55,9 @@ func (a *App) schedule() {
 	}
 }
 func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (string, error) {
+	return a.runHermesSession(ctx, userID, prompt, "")
+}
+func (a *App) runHermesSession(ctx context.Context, userID int64, prompt, sessionID string) (string, error) {
 	var base, key, model string
 	if e := a.DB.QueryRow("SELECT hermes_url,hermes_api_key,hermes_model FROM user_settings WHERE user_id=?", userID).Scan(&base, &key, &model); e != nil {
 		return "", e
@@ -66,6 +69,9 @@ func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (strin
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
+	if sessionID != "" {
+		req.Header.Set("X-Hermes-Session-Id", sessionID)
+	}
 	res, e := http.DefaultClient.Do(req)
 	if e != nil {
 		return "", e
@@ -110,6 +116,7 @@ func initialHermesPrompt(projectName, projectDirectory, task, done string) strin
 	return fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
 }
 func (a *App) startHermes(id int64, prompt string) {
+	sessionID := token()
 	tx, _ := a.DB.Begin()
 	res, e := tx.Exec("UPDATE jobs SET state='in_progress',pending_comment='',attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", id)
 	if e != nil {
@@ -123,7 +130,7 @@ func (a *App) startHermes(id int64, prompt string) {
 	}
 	var attempt int
 	tx.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", id).Scan(&attempt)
-	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, "hermes-api")
+	rr, _ := tx.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,?,?,'running')", id, attempt, "hermes-api:"+sessionID)
 	run, _ := rr.LastInsertId()
 	if e = appendJobEventTx(tx, id, "status", statusContent("todo", "in_progress")); e != nil {
 		tx.Rollback()
@@ -133,7 +140,7 @@ func (a *App) startHermes(id int64, prompt string) {
 	go func() {
 		var user int64
 		a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", id).Scan(&user)
-		out, e := a.runHermes(context.Background(), user, prompt)
+		out, e := a.runHermesSession(context.Background(), user, prompt, sessionID)
 		if e != nil {
 			a.block(id, run, e.Error())
 			return
@@ -189,14 +196,139 @@ func (a *App) block(job, run int64, msg string) {
 	a.notify(job, run, "error")
 }
 func (a *App) reconcile() {
-	rows, _ := a.DB.Query("SELECT id,job_id,tmux_session FROM job_runs WHERE status='running'")
+	rows, _ := a.DB.Query(`SELECT r.id,r.job_id,r.tmux_session FROM job_runs r JOIN jobs j ON j.id=r.job_id WHERE r.status='running' OR (r.status='blocked' AND r.tmux_session LIKE 'hermes-api:%' AND j.state='blocked' AND j.warning='Execution session missing after server restart')`)
 	defer rows.Close()
+	type pending struct {
+		run, job int64
+		session  string
+	}
+	var hermes []pending
 	for rows.Next() {
 		var run, job int64
 		var session string
 		rows.Scan(&run, &job, &session)
+		if strings.HasPrefix(session, "hermes-api:") {
+			hermes = append(hermes, pending{run, job, strings.TrimPrefix(session, "hermes-api:")})
+			continue
+		}
 		if exec.Command("tmux", "has-session", "-t", session).Run() != nil {
 			a.block(job, run, "Execution session missing after server restart")
+		}
+	}
+	rows.Close()
+	for _, x := range hermes {
+		if a.reconcileHermes(x.job, x.run, x.session) {
+			a.wg.Add(1)
+			go a.watchHermes(x.job, x.run, x.session)
+		}
+	}
+}
+
+type hermesSession struct {
+	Session struct {
+		EndedAt   any    `json:"ended_at"`
+		EndReason string `json:"end_reason"`
+	} `json:"session"`
+}
+type hermesMessages struct {
+	Data []struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	} `json:"data"`
+}
+
+func (a *App) hermesGet(user int64, path string, out any) error {
+	var base, key string
+	if err := a.DB.QueryRow("SELECT hermes_url,hermes_api_key FROM user_settings WHERE user_id=?", user).Scan(&base, &key); err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("Hermes API error %d", res.StatusCode)
+	}
+	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(out)
+}
+
+func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
+	var user int64
+	if err := a.DB.QueryRow("SELECT user_id FROM jobs WHERE id=?", job).Scan(&user); err != nil {
+		return false
+	}
+	var session hermesSession
+	var messages hermesMessages
+	if a.hermesGet(user, "/api/sessions/"+sessionID, &session) != nil || a.hermesGet(user, "/api/sessions/"+sessionID+"/messages", &messages) != nil {
+		return false
+	}
+	output := ""
+	for _, message := range messages.Data {
+		if message.Role == "user" {
+			output = ""
+		}
+		if message.Role == "assistant" {
+			switch content := message.Content.(type) {
+			case string:
+				output = content
+			default:
+				if b, err := json.Marshal(content); err == nil {
+					output = string(b)
+				}
+			}
+		}
+	}
+	if output != "" {
+		var count int
+		a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='output' AND content=?", run, output).Scan(&count)
+		if count == 0 {
+			a.appendJobEvent(job, "output", output)
+		}
+		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", output, run)
+		var old string
+		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&old)
+		res, _ := a.DB.Exec("UPDATE jobs SET state='done',warning='',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state IN ('blocked','in_progress')", job)
+		if changed, _ := res.RowsAffected(); changed > 0 {
+			a.appendJobEvent(job, "status", statusContent(old, "done"))
+		}
+		a.notify(job, run, "done")
+		a.signal()
+		return false
+	}
+	if session.Session.EndedAt != nil || session.Session.EndReason != "" {
+		msg := session.Session.EndReason
+		if msg == "" {
+			msg = "Hermes session ended without a response"
+		}
+		a.block(job, run, msg)
+		return false
+	}
+	res, _ := a.DB.Exec("UPDATE jobs SET state='in_progress',warning='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='blocked'", job)
+	if changed, _ := res.RowsAffected(); changed > 0 {
+		a.appendJobEvent(job, "status", statusContent("blocked", "in_progress"))
+	}
+	a.DB.Exec("UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?", run)
+	return true
+}
+
+func (a *App) watchHermes(job, run int64, sessionID string) {
+	defer a.wg.Done()
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-a.stop:
+			return
+		case <-tick.C:
+			if !a.reconcileHermes(job, run, sessionID) {
+				return
+			}
 		}
 	}
 }

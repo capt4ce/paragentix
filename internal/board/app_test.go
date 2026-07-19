@@ -97,6 +97,9 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if got := r.Header.Get("X-Hermes-Session-Id"); got != "session-123" {
+			t.Errorf("session header=%q", got)
+		}
 		w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}]}`))
 	}))
 	defer ts.Close()
@@ -109,9 +112,74 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 	a.DB.Exec("INSERT INTO user_settings(user_id,workspace_root,hermes_url,hermes_api_key,hermes_model) VALUES((SELECT id FROM users WHERE email='hermes-run@example.com'),?,?,?,?)", t.TempDir(), ts.URL+"/v1/", "secret", "hermes-agent")
 	var userID int64
 	a.DB.QueryRow("SELECT id FROM users WHERE email='hermes-run@example.com'").Scan(&userID)
-	got, err := a.runHermes(context.Background(), userID, "Reply OK")
+	got, err := a.runHermesSession(context.Background(), userID, "Reply OK", "session-123")
 	if err != nil || got != "OK" {
 		t.Fatalf("runHermes: got %q, err %v", got, err)
+	}
+}
+
+func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
+	for _, tc := range []struct {
+		name, messages, wantState, wantRun string
+	}{
+		{"completed", `{"object":"list","data":[{"role":"user","content":"work"},{"role":"assistant","content":"finished remotely"}]}`, "done", "done"},
+		{"active", `{"object":"list","data":[{"role":"user","content":"work"}]}`, "in_progress", "running"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer secret" {
+					t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+				}
+				switch r.URL.Path {
+				case "/api/sessions/hermes-session":
+					w.Write([]byte(`{"object":"hermes.session","session":{"id":"hermes-session","ended_at":null,"end_reason":null}}`))
+				case "/api/sessions/hermes-session/messages":
+					w.Write([]byte(tc.messages))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer ts.Close()
+			a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"recover@example.com","password":"password1"}`)
+			var user, lane int64
+			a.DB.QueryRow("SELECT id FROM users WHERE email='recover@example.com'").Scan(&user)
+			a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
+			a.DB.Exec("UPDATE user_settings SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL+"/v1", user)
+			res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,warning,position,attempt_count) VALUES(?,?,'work','blocked','Execution session missing after server restart',0,1)", user, lane)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, _ := res.LastInsertId()
+			res, _ = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,result_summary,ended_at) VALUES(?,1,'hermes-api:hermes-session','blocked','Execution session missing after server restart',CURRENT_TIMESTAMP)", job)
+			run, _ := res.LastInsertId()
+			a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'error','Execution session missing after server restart')", run)
+
+			a.reconcile()
+
+			var state, warning, runStatus string
+			a.DB.QueryRow("SELECT state,warning FROM jobs WHERE id=?", job).Scan(&state, &warning)
+			a.DB.QueryRow("SELECT status FROM job_runs WHERE id=?", run).Scan(&runStatus)
+			if state != tc.wantState || runStatus != tc.wantRun || warning != "" {
+				t.Fatalf("state=%q run=%q warning=%q", state, runStatus, warning)
+			}
+			var original int
+			a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='error'", run).Scan(&original)
+			if original != 1 {
+				t.Fatalf("original timeline events=%d", original)
+			}
+			if tc.wantState == "done" {
+				var output int
+				a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='output' AND content='finished remotely'", run).Scan(&output)
+				if output != 1 {
+					t.Fatalf("recovered output events=%d", output)
+				}
+			}
+		})
 	}
 }
 
