@@ -1,9 +1,77 @@
+# Local configuration and secrets
 .env
-sqlite.db*
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+
+# Go build and test artifacts
 bin/
 /paragentix
 /custom-agent
-.hermes/
+*.test
+*.coverprofile
+/cover.out
+/coverage.out
+/coverage-*.out
+*.pprof
+*.prof
+
+# Frontend dependencies, builds, and caches
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
+frontend/.cache/
+frontend/.npm/
+frontend/coverage/
+frontend/.nyc_output/
+frontend/.eslintcache
+frontend/.stylelintcache
+frontend/*.tsbuildinfo
+
+# Runtime state and local data
+.hermes/
 data/
+sqlite.db*
+
+# SQLite journals, sidecars, and backups
+*.db-journal
+*.db-shm
+*.db-wal
+*.db.bak
+*.db.backup
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite.bak
+*.sqlite.backup
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3.bak
+*.sqlite3.backup
+
+# Logs and temporary files
+*.log
+*.log.*
+*.tmp
+*.temp
+*.pid
+*.seed
+*.swp
+*.swo
+*~
+/tmp/
+/temp/
+
+# Editor settings
+.idea/
+.vscode/
+*.code-workspace
+
+# Operating system metadata
+.DS_Store
+.AppleDouble
+Thumbs.db
+Desktop.ini
