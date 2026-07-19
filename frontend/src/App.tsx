@@ -62,6 +62,8 @@ export const mergeNotifications = (current: any[], incoming: any[]) => [
 ];
 export const canComment = (state: string) =>
   state === "in_progress" || state === "blocked" || state === "done";
+export const canEditDoneDefinition = (job: any) =>
+  job.state === "todo" && job.attempt_count === 0;
 export const jobDetail = (x: any) => ({ ...x.job, events: x.events, session_id: x.session_id });
 export const columnPatch = (form: any) => ({
   name: form.name,
@@ -177,6 +179,19 @@ export function JobDetailMeta({ job, notify = () => {} }: { job: any; notify?: (
     </>
   );
 }
+export function DoneDefinitionField({ job, value, onChange }: { job: any; value: string; onChange: (value: string) => void }) {
+  return canEditDoneDefinition(job) ? (
+    <label className="job-inspector-section">
+      Done definition
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  ) : (
+    <section className="job-inspector-section">
+      <h3>Done definition</h3>
+      <p>{job.done_definition}</p>
+    </section>
+  );
+}
 function JobDetail({
   job,
   close,
@@ -224,15 +239,8 @@ function JobDetail({
         <h3>Task</h3>
         <p>{j.task}</p>
       </section>
-      <label className="job-inspector-section">
-        Done definition
-        <textarea
-          disabled={j.state === "done"}
-          value={done}
-          onChange={(e) => setDone(e.target.value)}
-        />
-      </label>
-      {j.state !== "done" && (
+      <DoneDefinitionField job={j} value={done} onChange={setDone} />
+      {canEditDoneDefinition(j) && (
         <AsyncButton
           onClick={async () => {
             await api("/jobs/" + job.id, {

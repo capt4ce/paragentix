@@ -598,11 +598,22 @@ func TestAuthIsolationAndStateValidation(t *testing.T) {
 	if w.Code != 404 {
 		t.Fatalf("cross-user access=%d", w.Code)
 	}
+	w, _ = req(t, h, c1, "PATCH", "/api/jobs/"+itoa(id), `{"done_definition":"eligible change"}`)
+	var doneDefinition string
+	if e := a.DB.QueryRow("SELECT done_definition FROM jobs WHERE id=?", id).Scan(&doneDefinition); w.Code != 200 || e != nil || doneDefinition != "eligible change" {
+		t.Fatalf("unexecuted todo edit=%d definition=%q err=%v", w.Code, doneDefinition, e)
+	}
 	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	w, _ = req(t, h, c1, "PATCH", "/api/jobs/"+itoa(id), `{"done_definition":"changed"}`)
 	if w.Code != 409 {
 		t.Fatalf("done edit=%d", w.Code)
 	}
+	a.DB.Exec("UPDATE jobs SET state='todo',attempt_count=1,finished_at=NULL WHERE id=?", id)
+	w, _ = req(t, h, c1, "PATCH", "/api/jobs/"+itoa(id), `{"done_definition":"changed"}`)
+	if w.Code != 409 {
+		t.Fatalf("executed todo edit=%d", w.Code)
+	}
+	a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	w, _ = req(t, h, c1, "POST", "/api/jobs/"+itoa(id)+"/retry", `{}`)
 	if w.Code != 409 {
 		t.Fatalf("retry without Hermes session=%d %s", w.Code, w.Body.String())

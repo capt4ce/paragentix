@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -260,6 +260,21 @@ describe("job comments", () => {
   });
 });
 describe("job detail session", () => {
+  it.each([
+    ["todo", 0, true],
+    ["todo", 1, false],
+    ["in_progress", 1, false],
+    ["done", 1, false],
+  ])("renders done definition editing for %s with %i attempts: %s", (state, attempt_count, editable) => {
+    const view = render(createElement(DoneDefinitionField, {
+      job: { state, attempt_count, done_definition: "Tests pass" },
+      value: "Tests pass",
+      onChange: vi.fn(),
+    }));
+    expect(view.queryByRole("textbox") !== null).toBe(editable);
+    expect(view.getByText("Done definition")).toBeTruthy();
+    if (!editable) expect(view.getByText("Tests pass").tagName).toBe("P");
+  });
   it("shows a shortened session ID separately and reports copying the full ID", async () => {
     const writeText = vi.fn(async () => {}), notify = vi.fn();
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

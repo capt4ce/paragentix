@@ -197,7 +197,8 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	}
 	var state string
 	var archived bool
-	e = a.DB.QueryRow("SELECT state,archived FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state, &archived)
+	var attempts int
+	e = a.DB.QueryRow("SELECT state,archived,attempt_count FROM jobs WHERE id=? AND user_id=?", id, uid(r)).Scan(&state, &archived, &attempts)
 	if e != nil {
 		fail(w, 404, "not found")
 		return
@@ -209,7 +210,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == "PATCH" {
-			a.editJob(w, r, id, state)
+			a.editJob(w, r, id, state, attempts)
 			return
 		}
 		if r.Method == "DELETE" {
@@ -323,13 +324,16 @@ func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	}
 	jsonOut(w, 200, map[string]any{"job": j, "events": ev, "session_id": sessionID})
 }
-func (a *App) editJob(w http.ResponseWriter, r *http.Request, id int64, state string) {
-	var x struct{ Task, DoneDefinition *string }
+func (a *App) editJob(w http.ResponseWriter, r *http.Request, id int64, state string, attempts int) {
+	var x struct {
+		Task           *string `json:"task"`
+		DoneDefinition *string `json:"done_definition"`
+	}
 	if decode(r, &x) != nil {
 		fail(w, 400, "invalid request")
 		return
 	}
-	if state == "done" || (state != "todo" && x.Task != nil) {
+	if (x.DoneDefinition != nil && (state != "todo" || attempts != 0)) || state == "done" || (state != "todo" && x.Task != nil) {
 		fail(w, 409, "field is locked in this state")
 		return
 	}
