@@ -12,6 +12,9 @@ func canonicalDir(root, path string) (string, string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", "", fmt.Errorf("projectDirectory required")
 	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return "", "", err

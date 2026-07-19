@@ -3,6 +3,7 @@ package board
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,9 +94,13 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member managed workspace: %d", w.Code)
 	}
-	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(wid)+"/projects", `{"name":"App","directory":"`+root+`"}`)
+	projectDir := filepath.Join(root, "app")
+	if e = os.Mkdir(projectDir, 0755); e != nil {
+		t.Fatal(e)
+	}
+	w, _ = req(t, h, owner, "POST", "/api/workspaces/"+itoa(wid)+"/projects", `{"name":"App","directory":"app"}`)
 	if w.Code != 201 {
-		t.Fatalf("project %d %s", w.Code, w.Body.String())
+		t.Fatalf("relative project %d %s", w.Code, w.Body.String())
 	}
 	json.Unmarshal(w.Body.Bytes(), &x)
 	pid := int64(x["id"].(float64))
