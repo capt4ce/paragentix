@@ -63,12 +63,14 @@ function JobDetail({
   };
   return (
     <DialogShell title="Job detail" close={close} inspector>
-      <p>
+      <p className="job-inspector-meta">
         <b>{j.state}</b> · {j.cli_tool} · attempt {j.attempt_count}
       </p>
-      <h3>Task</h3>
-      <p>{j.task}</p>
-      <label>
+      <section className="job-inspector-section">
+        <h3>Task</h3>
+        <p>{j.task}</p>
+      </section>
+      <label className="job-inspector-section">
         Done definition
         <textarea
           disabled={j.state === "done"}
@@ -86,20 +88,23 @@ function JobDetail({
             refresh();
           }}
         >
-          Save
+          Save changes
         </button>
       )}
       {j.warning && <p role="alert">{j.warning}</p>}
-      <button onClick={() => action("retry")}>Retry job</button>
-      <button
-        onClick={async () => {
-          await api("/jobs/" + job.id, { method: "DELETE" });
-          refresh();
-          close();
-        }}
-      >
-        Archive job
-      </button>
+      <div className="job-inspector-actions">
+        <button onClick={() => action("retry")}>Retry job</button>
+        <button
+          className="danger"
+          onClick={async () => {
+            await api("/jobs/" + job.id, { method: "DELETE" });
+            refresh();
+            close();
+          }}
+        >
+          Archive job
+        </button>
+      </div>
       <h3>Timeline</h3>
       <div className="conversation">
         {j.events?.length ? j.events.map((e: any) => <div key={e.id} className={`bubble ${eventSide(e.kind)} ${e.kind}`}><small>{eventSide(e.kind) === "sent" ? "You" : e.kind === "error" ? "Error" : "Agent"}</small><span>{e.content}</span></div>) : <p>No output yet</p>}
