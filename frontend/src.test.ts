@@ -172,6 +172,10 @@ describe("chat conversations", () => {
       .toBe("https://dev.ahsanworks.com/");
     expect(container.textContent).toBe(content);
   });
+  it("visually distinguishes timeline links", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.bubble a\{[^}]*color:[^}]*text-decoration:underline[^}]*\}\.bubble a:hover\{[^}]*color:[^}]*\}\.bubble a:focus-visible\{[^}]*outline:/);
+  });
 });
 describe("notification paging", () => {
   it("appends only unseen notifications", () => {
