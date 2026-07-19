@@ -65,7 +65,7 @@ func (a *App) runHermes(ctx context.Context, userID int64, prompt string) (strin
 		return "", e
 	}
 	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}})
-	req, e := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/chat/completions", strings.NewReader(string(body)))
+	req, e := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")+"/v1/chat/completions", strings.NewReader(string(body)))
 	if e != nil {
 		return "", e
 	}

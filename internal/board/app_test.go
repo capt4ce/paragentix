@@ -1,6 +1,7 @@
 package board
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -87,6 +88,30 @@ func TestHermesSettingsRequireURLAndAPIKey(t *testing.T) {
 	w, _ = req(t, h, cookie, "PATCH", "/api/settings", `{"default_cli":"hermes","hermes_url":"http://127.0.0.1:9999","hermes_api_key":"secret","hermes_model":"hermes-agent"}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"default_cli":"hermes"`) || strings.Contains(w.Body.String(), "secret") {
 		t.Fatalf("settings: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}]}`))
+	}))
+	defer ts.Close()
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.DB.Exec("INSERT INTO users(email,password_hash) VALUES('hermes-run@example.com','x')")
+	a.DB.Exec("INSERT INTO user_settings(user_id,workspace_root,hermes_url,hermes_api_key,hermes_model) VALUES((SELECT id FROM users WHERE email='hermes-run@example.com'),?,?,?,?)", t.TempDir(), ts.URL+"/v1/", "secret", "hermes-agent")
+	var userID int64
+	a.DB.QueryRow("SELECT id FROM users WHERE email='hermes-run@example.com'").Scan(&userID)
+	got, err := a.runHermes(context.Background(), userID, "Reply OK")
+	if err != nil || got != "OK" {
+		t.Fatalf("runHermes: got %q, err %v", got, err)
 	}
 }
 
