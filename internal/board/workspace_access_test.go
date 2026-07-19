@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -28,6 +29,31 @@ func TestEmbeddedFrontendIncludesWorkspaceUserStatuses(t *testing.T) {
 	for _, label := range []string{"Invited", "Member"} {
 		if !strings.Contains(string(asset), label) {
 			t.Fatalf("embedded frontend asset %q does not include workspace user status %q", match[1], label)
+		}
+	}
+}
+
+func TestEmbeddedFrontendIncludesCompactReplyComposer(t *testing.T) {
+	index, err := fs.ReadFile(web, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`assets/(index-[^"']+\.js)`).FindSubmatch(index)
+	if match == nil {
+		t.Fatalf("embedded frontend index has no JavaScript asset: %s", index)
+	}
+	asset, err := fs.ReadFile(web, "web/assets/"+string(match[1]))
+	if err != nil {
+		t.Fatalf("embedded frontend asset %q: %v", match[1], err)
+	}
+	for _, marker := range []string{"Reply to session", "Add files", "Send reply"} {
+		if !bytes.Contains(asset, []byte(marker)) {
+			t.Fatalf("embedded frontend asset %q does not include reply composer marker %q", match[1], marker)
+		}
+	}
+	for _, legacy := range []string{"Type a comment or instruction", "Send comment"} {
+		if bytes.Contains(asset, []byte(legacy)) {
+			t.Fatalf("embedded frontend asset %q still includes legacy reply composer text %q", match[1], legacy)
 		}
 	}
 }
