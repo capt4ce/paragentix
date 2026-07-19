@@ -58,6 +58,14 @@ describe("notification center", () => {
     expect(html).toContain('aria-label="Notifications"');
     expect(html).toContain('notification-bell');
   });
+  it.each([[1, "1"], [9, "9"], [10, "9+"], [42, "9+"]])("shows unread count %i as %s", (unread, count) => {
+    const html = renderToStaticMarkup(createElement(NotificationCenter, { notifications: [], unread, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
+    expect(html).toContain(`<b>${count}</b>`);
+  });
+  it("keeps the icon button compact when its badge is visible", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.notification-bell\{[^}]*margin:0[^}]*padding:0/);
+  });
   it("closes when clicking outside", () => {
     const { getByLabelText } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkUnread: () => {}, onLoadMore: () => {} }));
     const trigger = getByLabelText("Notifications");
