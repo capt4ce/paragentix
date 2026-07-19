@@ -135,9 +135,17 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	if tok == "" {
 		t.Fatal("test mail seam did not return token")
 	}
+	w, _ = req(t, h, owner, "GET", "/api/workspaces/"+itoa(wid)+"/members", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"email":"member@x.test"`) || !strings.Contains(w.Body.String(), `"status":"invited"`) {
+		t.Fatalf("invited user list %d %s", w.Code, w.Body.String())
+	}
 	w, _ = req(t, h, member, "POST", "/api/invitations/"+tok, "{}")
 	if w.Code != 200 {
 		t.Fatalf("accept %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, owner, "GET", "/api/workspaces/"+itoa(wid)+"/members", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"email":"member@x.test"`) || !strings.Contains(w.Body.String(), `"status":"member"`) || strings.Contains(w.Body.String(), `"status":"invited"`) {
+		t.Fatalf("accepted user list %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, member, "GET", "/api/workspaces", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "Team") {

@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { AsyncButton } from "@/components/AsyncButton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Archive, Pencil, Plus } from "lucide-react";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
@@ -71,6 +72,9 @@ export const filterProjectJobs = (jobs: any[], status: string, search: string) =
     (status === "all" || job.state === status) &&
     (!query || job.task.toLocaleLowerCase().includes(query)));
 };
+export function WorkspaceUserStatus({ status }: { status: "invited" | "member" }) {
+  return <Badge className={status === "invited" ? "border-yellow-600 bg-yellow-100 text-yellow-800" : "border-green-600 bg-green-100 text-green-800"}>{status === "invited" ? "Invited" : "Member"}</Badge>;
+}
 export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[] }): RequestInit {
   if (form.files?.length) {
     const body = new FormData();
@@ -795,12 +799,11 @@ export function App() {
                 )}
               </div>
               {items.map((m) => (
-                <section className="panel">
+                <section className="panel" key={`${m.status}-${m.id ?? m.email}`}>
                   <b>{m.email}</b>
-                  <span>
-                    {m.role} · joined {m.joinedAt}
-                  </span>
-                  {detail.role === "owner" && m.id !== me.id && (
+                  <WorkspaceUserStatus status={m.status} />
+                  {m.status === "member" && <span>{m.role} · joined {m.joinedAt}</span>}
+                  {detail.role === "owner" && m.status === "member" && m.id !== me.id && (
                     <button
                       onClick={() => {
                         setForm(m);

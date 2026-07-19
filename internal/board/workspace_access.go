@@ -129,14 +129,18 @@ func (a *App) workspaceMembers(w http.ResponseWriter, r *http.Request, wid int64
 		return
 	}
 	if memberID == 0 && r.Method == "GET" {
-		rows, _ := a.DB.Query(`SELECT u.id,u.email,m.role,m.created_at FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=?`, wid)
+		rows, _ := a.DB.Query(`SELECT u.id,u.email,m.role,m.created_at,'member' FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=?
+			UNION ALL
+			SELECT NULL,i.email,NULL,i.created_at,'invited' FROM workspace_invitations i WHERE i.workspace_id=? AND i.accepted_at IS NULL AND i.expires_at>datetime('now')
+			ORDER BY email`, wid, wid)
 		defer rows.Close()
 		out := []map[string]any{}
 		for rows.Next() {
-			var id int64
-			var e, rr, c string
-			rows.Scan(&id, &e, &rr, &c)
-			out = append(out, map[string]any{"id": id, "email": e, "role": rr, "joinedAt": c})
+			var id *int64
+			var e, c, status string
+			var rr *string
+			rows.Scan(&id, &e, &rr, &c, &status)
+			out = append(out, map[string]any{"id": id, "email": e, "role": rr, "joinedAt": c, "status": status})
 		}
 		jsonOut(w, 200, out)
 		return

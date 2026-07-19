@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory } from "./src";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent, useJobDetailHistory, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -115,6 +115,16 @@ describe("workspace list", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     expect(app).toMatch(/<section[^>]+onClick=\{\(\) => openWorkspace\(w\)\}/);
     expect(app).not.toContain("Open workspace");
+  });
+});
+describe("workspace users", () => {
+  it("shows invited and accepted member statuses with distinct chips", () => {
+    const invited = renderToStaticMarkup(createElement(WorkspaceUserStatus, { status: "invited" }));
+    const member = renderToStaticMarkup(createElement(WorkspaceUserStatus, { status: "member" }));
+    expect(invited).toContain("Invited");
+    expect(invited).toContain("yellow");
+    expect(member).toContain("Member");
+    expect(member).toContain("green");
   });
 });
 describe("notification center", () => {
