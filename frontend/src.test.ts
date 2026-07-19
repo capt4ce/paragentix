@@ -3,8 +3,8 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
+import { fireEvent, render, waitFor } from "@testing-library/react";
+import { api, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, filterProjectJobs, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, projectLocation, DialogShell, TimelineContent } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -16,6 +16,38 @@ describe("Mission Control foundation", () => {
   it("merges utility classes", () => expect(cn("a", false && "b", "c")).toBe("a c"));
   it("renders status as text, not color alone", () => {
     expect(renderToStaticMarkup(createElement(StatusBadge, { state: "in_progress" }))).toContain("In progress");
+  });
+});
+describe("async button", () => {
+  it("immediately announces and prevents duplicate actions while pending, then resets", async () => {
+    let finish!: () => void;
+    const action = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const { getByRole } = render(createElement(AsyncButton, { onClick: action }, "Save"));
+    const button = getByRole("button", { name: "Save" });
+
+    fireEvent.click(button);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.textContent).toBe("Loading…");
+    fireEvent.click(button);
+    expect(action).toHaveBeenCalledOnce();
+
+    finish();
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(button.hasAttribute("aria-busy")).toBe(false);
+    expect(button.textContent).toBe("Save");
+  });
+
+  it("resets after an action handles an API error", async () => {
+    const action = vi.fn(async () => {
+      try { await Promise.reject(new Error("failed")); } catch {}
+    });
+    const { getByRole } = render(createElement(AsyncButton, { onClick: action }, "Retry"));
+    const button = getByRole("button", { name: "Retry" });
+
+    fireEvent.click(button);
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(button.textContent).toBe("Retry");
   });
 });
 describe("workspace URL restoration", () => {
@@ -57,7 +89,7 @@ describe("account menu", () => {
   });
   it("includes the Settings action and settings form", () => {
     const app = readFileSync("src/App.tsx", "utf8");
-    expect(app).toMatch(/>\s*Settings\s*<\/button>/);
+    expect(app).toMatch(/>\s*Settings\s*<\/(?:button|AsyncButton)>/);
     expect(app).toContain("Hermes URL");
     expect(app).not.toContain("Codex");
     expect(app).not.toContain("Claude Code");

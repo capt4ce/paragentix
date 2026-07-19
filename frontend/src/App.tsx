@@ -4,10 +4,11 @@ import { api, base } from "@/lib/api";
 import { boardLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NotificationCenter } from "@/components/NotificationCenter";
+import { AsyncButton } from "@/components/AsyncButton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Archive, Pencil, Plus } from "lucide-react";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
@@ -103,7 +104,7 @@ export function JobCard({
           {job.creatorName}
         </span>
       </span>
-      <button
+      <AsyncButton
         type="button"
         className="job-archive danger"
         aria-label={`Archive ${job.task}`}
@@ -114,7 +115,7 @@ export function JobCard({
         }}
       >
         <Archive size={16} />
-      </button>
+      </AsyncButton>
     </article>
   );
 }
@@ -172,7 +173,7 @@ function JobDetail({
         />
       </label>
       {j.state !== "done" && (
-        <button
+        <AsyncButton
           onClick={async () => {
             await api("/jobs/" + job.id, {
               method: "PATCH",
@@ -182,12 +183,12 @@ function JobDetail({
           }}
         >
           Save changes
-        </button>
+        </AsyncButton>
       )}
       {j.warning && <p role="alert">{j.warning}</p>}
       {!j.archived && <div className="job-inspector-actions">
-        <button onClick={() => action("retry")}>Retry job</button>
-        <button
+        <AsyncButton onClick={() => action("retry")}>Retry job</AsyncButton>
+        <AsyncButton
           className="danger"
           onClick={async () => {
             await api("/jobs/" + job.id, { method: "DELETE" });
@@ -196,7 +197,7 @@ function JobDetail({
           }}
         >
           Archive job
-        </button>
+        </AsyncButton>
       </div>}
       <h3>Timeline</h3>
       <div className="conversation">
@@ -260,9 +261,9 @@ function JobDetail({
               onChange={(e) => setInput(e.target.value)}
             />
           </label>
-          <button onClick={() => action("input", { input })}>Send input</button>
-          <button onClick={() => action("approve")}>Approve</button>
-          <button onClick={() => action("cancel")}>Cancel to todo</button>
+          <AsyncButton onClick={() => action("input", { input })}>Send input</AsyncButton>
+          <AsyncButton onClick={() => action("approve")}>Approve</AsyncButton>
+          <AsyncButton onClick={() => action("cancel")}>Cancel to todo</AsyncButton>
         </div>
       )}
     </DialogShell>
@@ -291,6 +292,7 @@ export function App() {
     [unread, setUnread] = useState(0),
     [jobStatus, setJobStatus] = useState("all"),
     [jobSearch, setJobSearch] = useState(""),
+    [loadingTab, setLoadingTab] = useState(""),
     [job, setJob] = useState<any>();
   const menu = useRef<HTMLDetailsElement>(null);
   const load = async () => {
@@ -383,13 +385,18 @@ export function App() {
     history.pushState({}, "", `?workspace=${w.id}&tab=Info`);
   };
   const chooseTab = async (t: string) => {
+    setLoadingTab(t);
     setTab(t);
     history.pushState({}, "", `?workspace=${detail.id}&tab=${t}`);
-    setItems(
-      t === "Info"
-        ? []
-        : await api(`/workspaces/${detail.id}/${t.toLowerCase()}`),
-    );
+    try {
+      setItems(
+        t === "Info"
+          ? []
+          : await api(`/workspaces/${detail.id}/${t.toLowerCase()}`),
+      );
+    } finally {
+      setLoadingTab("");
+    }
   };
   const submit = async () => {
     try {
@@ -548,7 +555,7 @@ export function App() {
             </summary>
             <div className="accountmenu">
               <strong>{me.email}</strong>
-              <button
+              <AsyncButton
                 onClick={async () => {
                   closeDetails(menu);
                   setItems(await api("/projects"));
@@ -558,7 +565,7 @@ export function App() {
                 }}
               >
                 Projects
-              </button>
+              </AsyncButton>
               <button
                 onClick={() => {
                   closeDetails(menu);
@@ -576,7 +583,7 @@ export function App() {
               >
                 Profile
               </button>
-              <button
+              <AsyncButton
                 onClick={async () => {
                   closeDetails(menu);
                   setSettings(await api("/settings"));
@@ -584,8 +591,8 @@ export function App() {
                 }}
               >
                 Settings
-              </button>
-              <button
+              </AsyncButton>
+              <AsyncButton
                 onClick={async () => {
                   closeDetails(menu);
                   await api("/auth/logout", { method: "POST" });
@@ -593,7 +600,7 @@ export function App() {
                 }}
               >
                 Sign out
-              </button>
+              </AsyncButton>
             </div>
           </details>
         </div>
@@ -605,13 +612,13 @@ export function App() {
             <table>
               <thead><tr><th>Project</th><th>Workspace</th><th>Directory</th><th>Columns</th><th>Jobs</th></tr></thead>
               <tbody>{items.map((p) => (
-                <tr key={p.id} className="clickable-row" onClick={() => {
-                  setView("project");
-                  history.pushState({}, "", projectLocation(p.id));
-                  api(`/projects/${p.id}`).then(setDetail).catch((e) => setError(String(e)));
-                  setJobStatus("all"); setJobSearch("");
-                }}>
-                  <td><button className="link">{p.name}</button></td><td>{p.workspaceName}</td><td><code>{p.directory}</code></td><td>{p.columnCount}</td><td>{p.jobCount}</td>
+                <tr key={p.id} className="clickable-row">
+                  <td><AsyncButton className="link" onClick={async () => {
+                    setView("project");
+                    history.pushState({}, "", projectLocation(p.id));
+                    try { setDetail(await api(`/projects/${p.id}`)); } catch (e) { setError(String(e)); }
+                    setJobStatus("all"); setJobSearch("");
+                  }}>{p.name}</AsyncButton></td><td>{p.workspaceName}</td><td><code>{p.directory}</code></td><td>{p.columnCount}</td><td>{p.jobCount}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -620,7 +627,7 @@ export function App() {
       )}
       {view === "project" && detail && (
         <main className="page">
-          <button className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); history.pushState({}, "", "?projects=1"); }}>← Projects</button>
+          <AsyncButton className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); history.pushState({}, "", "?projects=1"); }}>← Projects</AsyncButton>
           <section className="panel project-details"><h2>{detail.name}</h2><span>Workspace: {detail.workspaceName}</span><code>{detail.directory}</code></section>
           <div className="pagehead"><h3>Jobs</h3><div className="job-filters">
             <Input aria-label="Search job tasks" placeholder="Search task…" value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} />
@@ -650,7 +657,7 @@ export function App() {
               <p>
                 {w.role} · {w.projectCount} projects · {w.memberCount} users
               </p>
-              <button onClick={() => openWorkspace(w)}>Open workspace</button>
+              <AsyncButton onClick={() => openWorkspace(w)}>Open workspace</AsyncButton>
             </section>
           ))}
         </main>
@@ -669,8 +676,8 @@ export function App() {
           <Tabs value={tab} onValueChange={chooseTab}>
             <TabsList>
               {["Info", "Projects", "Boards", "Users"].map((t) => (
-                <TabsTrigger key={t} value={t}>
-                  {t}
+                <TabsTrigger key={t} value={t} disabled={!!loadingTab} aria-busy={loadingTab === t || undefined}>
+                  {loadingTab === t ? `${t}…` : t}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -731,16 +738,16 @@ export function App() {
               <section className="panel">
                 <b>{b.name}</b>
                 <span>{b.columnCount} columns</span>
-                <button
-                  onClick={() => {
+                <AsyncButton
+                  onClick={async () => {
                     setBoard(boards.find((x) => x.id === b.id));
                     setView("board");
                     history.pushState({}, "", boardLocation(b.id));
-                    api(`/boards/${b.id}/columns`).then(setCols);
+                    setCols(await api(`/boards/${b.id}/columns`));
                   }}
                 >
                   Open board
-                </button>
+                </AsyncButton>
               </section>
             ))}
           {tab === "Users" && (
@@ -800,11 +807,11 @@ export function App() {
               </button>
             ))}
             {board && (
-              <Button
-                variant="outline"
-                size="icon"
+              <AsyncButton
+                className={buttonVariants({ variant: "outline", size: "icon" })}
                 aria-label="Add column"
                 title="Add column"
+                loadingLabel="…"
                 onClick={async () => {
                   const projects = await api(
                     `/workspaces/${board.workspaceId}/projects`,
@@ -818,7 +825,7 @@ export function App() {
                 }}
               >
                 <Plus size={18} />
-              </Button>
+              </AsyncButton>
             )}
           </nav>
           <main className="board">
@@ -827,9 +834,10 @@ export function App() {
                 <div className="lanehead">
                   <b>{c.name}</b>
                   <span className="lane-actions">
-                    <button
+                    <AsyncButton
                       aria-label={`Edit ${c.name}`}
                       title="Edit column"
+                      loadingLabel="…"
                       onClick={async () => {
                         setForm({
                           ...c,
@@ -841,18 +849,19 @@ export function App() {
                       }}
                     >
                       <Pencil size={16} />
-                    </button>
-                    <button
+                    </AsyncButton>
+                    <AsyncButton
                       className="danger"
                       aria-label={`Archive ${c.name}`}
                       title="Archive column"
+                      loadingLabel="…"
                       onClick={async () => {
                         await archiveColumn(c.id);
                         await load();
                       }}
                     >
                       <Archive size={16} />
-                    </button>
+                    </AsyncButton>
                   </span>
                 </div>
                 <small>
@@ -936,7 +945,7 @@ export function App() {
                     />
                   </label>
               </>
-              <button
+              <AsyncButton
                 onClick={async () => {
                   try {
                     await api("/settings", {
@@ -950,12 +959,12 @@ export function App() {
                 }}
               >
                 Save
-              </button>
+              </AsyncButton>
             </>
           ) : dialog === "remove" ? (
             <>
               <p>Remove {form.email} from this workspace?</p>
-              <button onClick={submit}>Confirm removal</button>
+              <AsyncButton onClick={submit}>Confirm removal</AsyncButton>
             </>
           ) : (
             <>
@@ -1069,12 +1078,12 @@ export function App() {
                   </label>
                 </>
               )}
-              <button
+              <AsyncButton
                 disabled={dialog === "column" && !form.projectId}
                 onClick={submit}
               >
                 Save
-              </button>
+              </AsyncButton>
             </>
           )}
         </DialogShell>
