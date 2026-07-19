@@ -31,10 +31,10 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
-		jr, _ := a.DB.Query("SELECT id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at FROM jobs WHERE lane_id=? ORDER BY CASE state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,position", l.ID)
+		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,j.position", l.ID)
 		for jr.Next() {
 			var j Job
-			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated)
+			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
 			l.Jobs = append(l.Jobs, j)
 		}
 		jr.Close()
@@ -184,7 +184,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
-	a.DB.QueryRow("SELECT id,lane_id,task,done_definition,warning,state,position,attempt_count,created_at,updated_at FROM jobs WHERE id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated)
+	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
 	var ev []map[string]any
 	rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()

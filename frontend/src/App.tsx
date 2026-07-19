@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
 import { boardLocation, parseLocation } from "@/lib/routes";
@@ -65,12 +65,30 @@ export function JobCard({
   open: () => void;
   archive: () => Promise<void>;
 }) {
+  const creatorTooltipId = useId();
   return (
     <article className={"job " + job.state}>
       <button type="button" className="job-open" onClick={open}>
         <b>{job.task}</b>
         <StatusBadge state={job.state} />
       </button>
+      <span className="job-creator">
+        <button
+          type="button"
+          className="creator-avatar"
+          aria-label={job.creatorName}
+          aria-describedby={creatorTooltipId}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.currentTarget.focus();
+          }}
+        >
+          {job.creatorName?.trim().charAt(0).toUpperCase()}
+        </button>
+        <span id={creatorTooltipId} role="tooltip" className="creator-tooltip">
+          {job.creatorName}
+        </span>
+      </span>
       <button
         type="button"
         className="job-archive danger"

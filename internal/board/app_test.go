@@ -305,7 +305,7 @@ func TestV2ColumnUsesMappedLane(t *testing.T) {
 	var columns []struct {
 		Jobs []Job `json:"jobs"`
 	}
-	if json.Unmarshal(w.Body.Bytes(), &columns) != nil || len(columns) != 1 || len(columns[0].Jobs) != 1 || columns[0].Jobs[0].Task != "mapped" {
+	if json.Unmarshal(w.Body.Bytes(), &columns) != nil || len(columns) != 1 || len(columns[0].Jobs) != 1 || columns[0].Jobs[0].Task != "mapped" || columns[0].Jobs[0].Creator != "column@example.com" {
 		t.Fatalf("column jobs: %d %s", w.Code, w.Body.String())
 	}
 }

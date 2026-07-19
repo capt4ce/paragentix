@@ -124,6 +124,21 @@ describe("job comments", () => {
   });
 });
 describe("job actions", () => {
+  it("shows the creator avatar with an accessible tooltip", () => {
+    const { getByRole, unmount } = render(createElement(JobCard, {
+      job: { id: 7, task: "Ship it", state: "done", creatorName: "Ada Lovelace" },
+      open: vi.fn(),
+      archive: vi.fn(async () => {}),
+    }));
+    const avatar = getByRole("button", { name: "Ada Lovelace" });
+    const tooltip = getByRole("tooltip");
+    expect(avatar.textContent).toBe("A");
+    expect(avatar.getAttribute("aria-describedby")).toBe(tooltip.id);
+    expect(tooltip.textContent).toBe("Ada Lovelace");
+    fireEvent.click(avatar);
+    expect(document.activeElement).toBe(avatar);
+    unmount();
+  });
   it.each(["todo", "in_progress", "blocked", "done"])(
     "shows retry and archive for %s jobs",
     (state) =>
