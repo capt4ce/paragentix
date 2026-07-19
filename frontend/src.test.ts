@@ -35,6 +35,9 @@ describe("column edit", () => {
   it("links navigation to a column", () => expect(columnAnchor(7)).toBe("column-7"));
 });
 describe("account menu", () => {
+  it("links the Paragentix wordmark to the app homepage", () => {
+    expect(readFileSync("src/App.tsx", "utf8")).toContain('<a href={base} aria-label="Paragentix home">Paragentix</a>');
+  });
   it("closes native details", () => {
     const d = document.createElement("details"); d.open = true;
     closeDetails({ current: d }); expect(d.open).toBe(false);
