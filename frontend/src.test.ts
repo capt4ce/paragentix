@@ -116,6 +116,12 @@ describe("chat conversations", () => {
     expect(eventSide("output")).toBe("received");
     expect(eventSide("error")).toBe("received");
   });
+  it("labels blocked-session input and gives the timeline room", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    const css = readFileSync("src/index.css", "utf8");
+    expect(app).toContain("Blocked-session input");
+    expect(css).toMatch(/\.conversation\{[^}]*min-height:min\(420px,50dvh\)/);
+  });
 });
 describe("notification paging", () => {
   it("appends only unseen notifications", () => {

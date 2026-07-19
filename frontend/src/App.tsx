@@ -146,11 +146,14 @@ function JobDetail({
       )}
       {j.state === "blocked" && (
         <div className="actions">
-          <input
-            aria-label="Manual input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-          />
+          <label>
+            Blocked-session input
+            <input
+              placeholder="Answer the agent's request…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+            />
+          </label>
           <button onClick={() => action("input", { input })}>Send input</button>
           <button onClick={() => action("approve")}>Approve</button>
           <button onClick={() => action("cancel")}>Cancel to todo</button>
