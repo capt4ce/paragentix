@@ -363,7 +363,7 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 }
 
-func TestWorkspaceMembersCanArchiveJobsAndColumns(t *testing.T) {
+func TestWorkspaceMembersCanArchiveColumnsButNotOtherUsersJobs(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -429,18 +429,18 @@ func TestWorkspaceMembersCanArchiveJobsAndColumns(t *testing.T) {
 	}
 	assertArchived("jobs", jobID, false)
 	w, _ = req(t, h, member, "DELETE", "/api/jobs/"+itoa(jobID), "")
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("member archive job: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("member archived owner job: %d %s", w.Code, w.Body.String())
 	}
-	assertArchived("jobs", jobID, true)
+	assertArchived("jobs", jobID, false)
 
 	columnID, _ = createColumn("Owner job archive")
 	jobID = createJob(member, columnID)
 	w, _ = req(t, h, owner, "DELETE", "/api/jobs/"+itoa(jobID), "")
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("owner archive member job: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("owner archived member job: %d %s", w.Code, w.Body.String())
 	}
-	assertArchived("jobs", jobID, true)
+	assertArchived("jobs", jobID, false)
 
 	columnID, _ = createColumn("Member column archive")
 	jobID = createJob(owner, columnID)
@@ -487,6 +487,9 @@ func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
 	var column map[string]any
 	json.Unmarshal(w.Body.Bytes(), &column)
 	columnID := int64(column["id"].(float64))
+	if _, err = a.DB.Exec(`UPDATE lanes SET paused=1 WHERE id=(SELECT lane_id FROM columns WHERE id=?)`, columnID); err != nil {
+		t.Fatal(err)
+	}
 	w, _ = req(t, h, owner, "POST", "/api/columns/"+itoa(columnID)+"/jobs", `{"task":"Shared task","doneDefinition":"Reviewed"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create job: %d %s", w.Code, w.Body.String())
@@ -494,11 +497,17 @@ func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
 	var job map[string]any
 	json.Unmarshal(w.Body.Bytes(), &job)
 	jobID := int64(job["id"].(float64))
+	if err = a.appendJobEvent(jobID, "output", "shared timeline entry"); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, path := range []string{"/api/jobs/" + itoa(jobID), "/api/jobs/" + itoa(jobID) + "/events"} {
 		w, _ = req(t, h, member, "GET", path, "")
 		if w.Code != http.StatusOK {
 			t.Errorf("member GET %s: %d %s", path, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "shared timeline entry") {
+			t.Errorf("member GET %s omitted timeline: %s", path, w.Body.String())
 		}
 		w, _ = req(t, h, outsider, "GET", path, "")
 		if w.Code != http.StatusNotFound {
@@ -508,6 +517,10 @@ func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
 	w, _ = req(t, h, member, "PATCH", "/api/jobs/"+itoa(jobID), `{"task":"Changed"}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("member edited owner job: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = req(t, h, member, "DELETE", "/api/jobs/"+itoa(jobID), "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("member archived owner job: %d %s", w.Code, w.Body.String())
 	}
 }
 
