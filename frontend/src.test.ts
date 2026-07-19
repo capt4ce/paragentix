@@ -193,9 +193,14 @@ describe("chat conversations", () => {
       .toBe("https://dev.ahsanworks.com/");
     expect(container.textContent).toBe(content);
   });
-  it("visually distinguishes timeline links", () => {
+  it("renders timeline history as subdued text with accessible links", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
     const css = readFileSync("src/index.css", "utf8");
-    expect(css).toMatch(/\.bubble a\{[^}]*color:[^}]*text-decoration:underline[^}]*\}\.bubble a:hover\{[^}]*color:[^}]*\}\.bubble a:focus-visible\{[^}]*outline:/);
+    const entryRule = css.match(/\.timeline-entry\{([^}]*)\}/)?.[1] ?? "";
+    expect(app).toContain('className={`timeline-entry ${e.kind}`}');
+    expect(entryRule).toContain("color:#95a4b8");
+    expect(entryRule).not.toMatch(/background|border-radius/);
+    expect(css).toMatch(/\.timeline-entry a\{[^}]*color:[^}]*text-decoration:underline[^}]*\}\.timeline-entry a:hover\{[^}]*color:[^}]*\}\.timeline-entry a:focus-visible\{[^}]*outline:/);
   });
 });
 describe("notification paging", () => {

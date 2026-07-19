@@ -193,7 +193,7 @@ function JobDetail({
       <div className="conversation">
         {j.events?.length ? (
           j.events.map((e: any) => (
-            <div key={e.id} className={`bubble ${eventSide(e.kind)} ${e.kind}`}>
+            <div key={e.id} className={`timeline-entry ${e.kind}`}>
               <small>
                 {eventSide(e.kind) === "sent"
                   ? "You"
