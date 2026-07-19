@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fireEvent, render } from "@testing-library/react";
-import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell, TimelineContent } from "./src";
+import { api, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, eventSide, isConversationEvent, jobActionsVisible, jobColumn, JobCard, mergeNotifications, NotificationCenter, parseLocation, DialogShell, TimelineContent } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 describe("Mission Control foundation", () => {
@@ -193,11 +193,17 @@ describe("chat conversations", () => {
       .toBe("https://dev.ahsanworks.com/");
     expect(container.textContent).toBe(content);
   });
-  it("renders timeline history as subdued text with accessible links", () => {
+  it("renders replies as bubbles and job history as subdued text", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     const css = readFileSync("src/index.css", "utf8");
     const entryRule = css.match(/\.timeline-entry\{([^}]*)\}/)?.[1] ?? "";
-    expect(app).toContain('className={`timeline-entry ${e.kind}`}');
+    expect(isConversationEvent("comment")).toBe(true);
+    expect(isConversationEvent("reply")).toBe(true);
+    expect(isConversationEvent("status")).toBe(false);
+    expect(isConversationEvent("output")).toBe(false);
+    expect(app).toContain('isConversationEvent(e.kind) ? `bubble ${eventSide(e.kind)}` : "timeline-entry"');
+    expect(css).toMatch(/\.bubble\.received\{[^}]*background:/);
+    expect(css).toMatch(/\.bubble\.sent\{[^}]*background:/);
     expect(entryRule).toContain("color:#95a4b8");
     expect(entryRule).not.toMatch(/background|border-radius/);
     expect(css).toMatch(/\.timeline-entry a\{[^}]*color:[^}]*text-decoration:underline[^}]*\}\.timeline-entry a:hover\{[^}]*color:[^}]*\}\.timeline-entry a:focus-visible\{[^}]*outline:/);

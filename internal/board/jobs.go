@@ -234,7 +234,7 @@ func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
 	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
 	var ev []map[string]any
-	rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
+	rows, _ := a.DB.Query("SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()
 	for rows.Next() {
 		var i int

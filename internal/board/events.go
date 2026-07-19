@@ -142,7 +142,7 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 	a.signal()
 }
 func (a *App) events(w http.ResponseWriter, id int64) {
-	rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
+	rows, _ := a.DB.Query("SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
@@ -165,7 +165,7 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request, id int64) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		rows, _ := a.DB.Query("SELECT e.id,e.kind,e.content FROM job_events e JOIN job_runs x ON x.id=e.job_run_id WHERE x.job_id=? AND e.id>? ORDER BY e.id", id, last)
+		rows, _ := a.DB.Query("SELECT e.id,CASE WHEN e.kind='output' AND x.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content FROM job_events e JOIN job_runs x ON x.id=e.job_run_id WHERE x.job_id=? AND e.id>? ORDER BY e.id", id, last)
 		for rows.Next() {
 			var kind, content string
 			rows.Scan(&last, &kind, &content)

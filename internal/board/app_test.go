@@ -174,7 +174,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 			}
 			if tc.wantState == "done" {
 				var output int
-				a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='output' AND content='finished remotely'", run).Scan(&output)
+				a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content='finished remotely'", run).Scan(&output)
 				if output != 1 {
 					t.Fatalf("recovered output events=%d", output)
 				}

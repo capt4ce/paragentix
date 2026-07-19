@@ -22,6 +22,8 @@ export async function archiveColumn(id: number) {
 }
 export const eventSide = (kind: string) =>
   kind === "comment" || kind === "input" ? "sent" : "received";
+export const isConversationEvent = (kind: string) =>
+  kind === "comment" || kind === "input" || kind === "reply";
 export const eventLabel = (kind: string) => ({
   status: "Status",
   retry: "Retry",
@@ -193,7 +195,7 @@ function JobDetail({
       <div className="conversation">
         {j.events?.length ? (
           j.events.map((e: any) => (
-            <div key={e.id} className={`timeline-entry ${e.kind}`}>
+            <div key={e.id} className={`${isConversationEvent(e.kind) ? `bubble ${eventSide(e.kind)}` : "timeline-entry"} ${e.kind}`}>
               <small>
                 {eventSide(e.kind) === "sent"
                   ? "You"

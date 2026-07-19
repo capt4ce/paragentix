@@ -145,7 +145,7 @@ func (a *App) startHermes(id int64, prompt string) {
 			a.block(id, run, e.Error())
 			return
 		}
-		a.appendJobEvent(id, "output", out)
+		a.appendJobEvent(id, "reply", out)
 		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", out, run)
 		a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 		a.appendJobEvent(id, "status", statusContent("in_progress", "done"))
@@ -286,9 +286,9 @@ func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
 	}
 	if output != "" {
 		var count int
-		a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='output' AND content=?", run, output).Scan(&count)
+		a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content=?", run, output).Scan(&count)
 		if count == 0 {
-			a.appendJobEvent(job, "output", output)
+			a.appendJobEvent(job, "reply", output)
 		}
 		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", output, run)
 		var old string
