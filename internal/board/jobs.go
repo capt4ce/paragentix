@@ -159,8 +159,8 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	var archived bool
 	var attempts int
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	workspaceRead := r.Method == "GET" && (len(parts) == 1 || len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream"))
-	if workspaceRead {
+	workspaceAccess := (r.Method == "GET" && (len(parts) == 1 || len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream"))) || (r.Method == "DELETE" && len(parts) == 1)
+	if workspaceAccess {
 		e = a.DB.QueryRow(`SELECT j.state,j.archived,j.attempt_count FROM jobs j WHERE j.id=? AND (j.user_id=? OR EXISTS(
 			SELECT 1 FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id
 			WHERE c.lane_id=j.lane_id AND m.user_id=?))`, id, uid(r), uid(r)).Scan(&state, &archived, &attempts)

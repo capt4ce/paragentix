@@ -315,7 +315,7 @@ func TestWorkspaceProjectsMembershipInvitesAndColumnProject(t *testing.T) {
 	}
 }
 
-func TestWorkspaceMembersCanArchiveColumnsButNotOtherUsersJobs(t *testing.T) {
+func TestWorkspaceMembersCanArchiveJobsAndColumns(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -381,18 +381,18 @@ func TestWorkspaceMembersCanArchiveColumnsButNotOtherUsersJobs(t *testing.T) {
 	}
 	assertArchived("jobs", jobID, false)
 	w, _ = req(t, h, member, "DELETE", "/api/jobs/"+itoa(jobID), "")
-	if w.Code != http.StatusNotFound {
+	if w.Code != http.StatusNoContent {
 		t.Fatalf("member archived owner job: %d %s", w.Code, w.Body.String())
 	}
-	assertArchived("jobs", jobID, false)
+	assertArchived("jobs", jobID, true)
 
 	columnID, _ = createColumn("Owner job archive")
 	jobID = createJob(member, columnID)
 	w, _ = req(t, h, owner, "DELETE", "/api/jobs/"+itoa(jobID), "")
-	if w.Code != http.StatusNotFound {
+	if w.Code != http.StatusNoContent {
 		t.Fatalf("owner archived member job: %d %s", w.Code, w.Body.String())
 	}
-	assertArchived("jobs", jobID, false)
+	assertArchived("jobs", jobID, true)
 
 	columnID, _ = createColumn("Member column archive")
 	jobID = createJob(owner, columnID)
@@ -479,7 +479,7 @@ func TestWorkspaceMembersCanReadJobsButNotEditThem(t *testing.T) {
 		t.Fatalf("member edited owner job: %d %s", w.Code, w.Body.String())
 	}
 	w, _ = req(t, h, member, "DELETE", "/api/jobs/"+itoa(jobID), "")
-	if w.Code != http.StatusNotFound {
+	if w.Code != http.StatusNoContent {
 		t.Fatalf("member archived owner job: %d %s", w.Code, w.Body.String())
 	}
 }
