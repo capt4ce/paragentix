@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { LoaderCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 type AsyncButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onClick"> & {
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void | Promise<void>;
@@ -7,6 +8,7 @@ type AsyncButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onC
 
 export function AsyncButton({
   children,
+  className,
   disabled,
   onClick,
   ...props
@@ -18,6 +20,7 @@ export function AsyncButton({
   return (
     <button
       {...props}
+      className={cn("inline-flex items-center justify-center", className)}
       aria-label={loading ? accessibleLabel : props["aria-label"]}
       disabled={disabled || loading}
       aria-busy={loading || undefined}

@@ -23,7 +23,7 @@ describe("async button", () => {
   it("immediately announces and prevents duplicate actions while pending, then resets", async () => {
     let finish!: () => void;
     const action = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
-    const { getByRole } = render(createElement(AsyncButton, { onClick: action }, "Save"));
+    const { getByRole } = render(createElement(AsyncButton, { className: "h-20 w-full", onClick: action }, "Save"));
     const button = getByRole("button", { name: "Save" });
 
     fireEvent.click(button);
@@ -31,6 +31,9 @@ describe("async button", () => {
     expect(button.getAttribute("aria-busy")).toBe("true");
     expect(button.getAttribute("aria-label")).toBe("Save");
     expect(button.textContent).toBe("");
+    expect(button.className).toContain("h-20 w-full");
+    expect(button.className).toContain("items-center");
+    expect(button.className).toContain("justify-center");
     expect(button.querySelector("svg")?.classList.contains("animate-spin")).toBe(true);
     fireEvent.click(button);
     expect(action).toHaveBeenCalledOnce();
