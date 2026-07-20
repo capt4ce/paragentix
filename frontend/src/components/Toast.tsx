@@ -1,6 +1,14 @@
+import { useEffect } from "react";
+
 export type ToastMessage = { message: string; type: "success" | "error" };
 
-export function Toast({ toast }: { toast?: ToastMessage }) {
+export function Toast({ toast, onDismiss }: { toast?: ToastMessage; onDismiss?: () => void }) {
+  useEffect(() => {
+    if (!toast || !onDismiss) return;
+    const timeout = window.setTimeout(onDismiss, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [toast, onDismiss]);
+
   if (!toast) return null;
   return (
     <div

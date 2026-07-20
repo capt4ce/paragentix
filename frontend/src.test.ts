@@ -192,6 +192,17 @@ describe("toast feedback", () => {
     await runWithToast(vi.fn(async () => { throw new Error("locked"); }), notify, "Column Done archived", "Failed to archive column Done");
     expect(notify).toHaveBeenLastCalledWith({ message: "Failed to archive column Done: locked", type: "error" });
   });
+  it("dismisses itself after four seconds", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const toast = render(createElement(Toast, { toast: { message: "Saved", type: "success" }, onDismiss }));
+    vi.advanceTimersByTime(3999);
+    expect(onDismiss).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onDismiss).toHaveBeenCalledOnce();
+    toast.unmount();
+    vi.useRealTimers();
+  });
 });
 describe("workspace invitation modal", () => {
   it("closes and navigates home after accepting an invitation", async () => {

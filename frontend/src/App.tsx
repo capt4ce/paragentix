@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
 import { boardLocation, parseLocation, projectLocation } from "@/lib/routes";
@@ -426,6 +426,7 @@ export function App() {
     [job, setJob] = useState<any>(),
     [invitation, setInvitation] = useState<any>(),
     [toast, setToast] = useState<ToastMessage>();
+  const dismissToast = useCallback(() => setToast(undefined), []);
   const menu = useRef<HTMLDetailsElement>(null);
   const draggedColumn = useRef<number | null>(null);
   const reorderColumns = async (from: number, to: number) => {
@@ -1325,7 +1326,7 @@ export function App() {
         history.pushState({}, "", base);
         await load();
       }} />}
-      <Toast toast={toast} />
+      <Toast toast={toast} onDismiss={dismissToast} />
     </>
   );
 }
