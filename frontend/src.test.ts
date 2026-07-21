@@ -373,6 +373,27 @@ describe("job detail history", () => {
   });
 });
 describe("job actions", () => {
+  it("abbreviates long task text while exposing the full task", () => {
+    const wordLimitedTask = "one two three four five six seven eight nine ten a b c d e f";
+    const characterLimitedTask = "abcdefgh ijklmnop qrstuvwx yzabcdef ghijklmn opqrstuv wxyzabcd efghijkl";
+    const props = { open: vi.fn(), archive: vi.fn(async () => {}) };
+    const { container, rerender } = render(createElement(JobCard, {
+      job: { task: wordLimitedTask, state: "todo" },
+      ...props,
+    }));
+
+    let task = container.querySelector(".job-open b")!;
+    expect(task.textContent).toBe("one two three four five six seven eight nine ten a b c d e...");
+    expect(task.getAttribute("title")).toBe(wordLimitedTask);
+
+    rerender(createElement(JobCard, {
+      job: { task: characterLimitedTask, state: "todo" },
+      ...props,
+    }));
+    task = container.querySelector(".job-open b")!;
+    expect(task.textContent).toMatch(/^.{1,60}\.\.\.$/);
+    expect(task.getAttribute("title")).toBe(characterLimitedTask);
+  });
   it("shows the creator avatar with an accessible tooltip", () => {
     const { getByRole, unmount } = render(createElement(JobCard, {
       job: { id: 7, task: "Ship it", state: "done", creatorName: "Ada Lovelace" },

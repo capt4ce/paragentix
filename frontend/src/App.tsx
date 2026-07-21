@@ -126,6 +126,11 @@ export function replyRequest(comment: string, files: File[]): RequestInit {
   files.forEach((file) => body.append("files", file));
   return { method: "POST", body };
 }
+const abbreviatedJobTask = (task: string) => {
+  const words = task.trim().split(/\s+/);
+  if (words.length <= 15 && task.length <= 60) return task;
+  return words.slice(0, 15).join(" ").slice(0, 60).trimEnd() + "...";
+};
 export function JobCard({
   job,
   open,
@@ -139,7 +144,7 @@ export function JobCard({
   return (
     <article className={"job " + job.state}>
       <button type="button" className="job-open" onClick={open}>
-        <b>{job.task}</b>
+        <b title={job.task}>{abbreviatedJobTask(job.task)}</b>
         <StatusBadge state={job.state} />
       </button>
       <span className="job-creator">
