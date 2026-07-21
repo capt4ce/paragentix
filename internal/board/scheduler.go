@@ -128,7 +128,11 @@ func (a *App) start(id int64, task, done, root string) {
 }
 
 func initialHermesPrompt(projectName, projectDirectory, task, done string, attachmentSets ...[]jobAttachment) string {
-	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s\n\nDone definition:\n%s", projectName, projectDirectory, projectDirectory, task, done)
+	doneDefinition := ""
+	if len(done) != 0 {
+		doneDefinition = fmt.Sprintf("\n\nDone definition:\n%s", done)
+	}
+	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s%s", projectName, projectDirectory, projectDirectory, task, doneDefinition)
 	if len(attachmentSets) > 0 && len(attachmentSets[0]) > 0 {
 		prompt = appendAttachmentContext(prompt, attachmentSets[0])
 	}
