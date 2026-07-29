@@ -4,16 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const maxForksPerBatch = 10
-const maxForkTranscriptBytes = 64 << 10
 const maxMergePointBytes = 1000
+const conversationCompletionAttempts = 3
+
+var errConversationCompletionStale = errors.New("conversation completion is no longer current")
 
 type Conversation struct {
 	ID                   int64  `json:"id"`
@@ -248,8 +257,37 @@ func (a *App) createForks(w http.ResponseWriter, r *http.Request, parentID, jobI
 		fail(w, http.StatusConflict, "fork event is not in this conversation")
 		return
 	}
+	workspaceID, sourceSessionID, err := a.conversationHermesSource(jobID, parentID)
+	if err != nil {
+		fail(w, http.StatusConflict, "parent Hermes session is unavailable")
+		return
+	}
+	type remoteFork struct {
+		session string
+		title   string
+		reply   string
+	}
+	remote := make([]remoteFork, 0, len(input.Replies))
+	cleanup := func(forks []remoteFork) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, fork := range forks {
+			_ = a.deleteHermesSession(ctx, workspaceID, fork.session)
+		}
+	}
+	for _, reply := range input.Replies {
+		title := conversationTitle(reply)
+		sessionID, forkErr := a.forkHermesSession(r.Context(), workspaceID, sourceSessionID, token(), title)
+		if forkErr != nil {
+			cleanup(remote)
+			fail(w, http.StatusBadGateway, forkErr.Error())
+			return
+		}
+		remote = append(remote, remoteFork{session: sessionID, title: title, reply: reply})
+	}
 	tx, err := a.DB.Begin()
 	if err != nil {
+		cleanup(remote)
 		fail(w, http.StatusInternalServerError, "could not create branches")
 		return
 	}
@@ -258,114 +296,53 @@ func (a *App) createForks(w http.ResponseWriter, r *http.Request, parentID, jobI
 	type pendingFork struct {
 		id      int64
 		session string
-		prompt  string
+		message string
 	}
 	pending := []pendingFork{}
-	for _, reply := range input.Replies {
-		titleRunes := []rune(reply)
-		title := reply
-		if len(titleRunes) > 60 {
-			title = strings.TrimSpace(string(titleRunes[:57])) + "..."
-		}
-		sessionID := token()
+	for _, fork := range remote {
 		result, txErr := tx.Exec(`INSERT INTO job_conversations(job_id,parent_conversation_id,fork_event_id,title,status,hermes_session_id)
-			VALUES(?,?,?,?, 'active',?)`, jobID, parentID, input.ForkEventID, title, sessionID)
+			VALUES(?,?,?,?, 'active',?)`, jobID, parentID, input.ForkEventID, fork.title, fork.session)
 		if txErr != nil {
+			cleanup(remote)
 			fail(w, http.StatusInternalServerError, "could not create branches")
 			return
 		}
 		id, _ := result.LastInsertId()
-		if txErr = appendConversationEventTx(tx, jobID, id, "comment", reply); txErr != nil {
+		if txErr = appendConversationEventTx(tx, jobID, id, "comment", fork.reply); txErr != nil {
+			cleanup(remote)
 			fail(w, http.StatusInternalServerError, "could not create branches")
 			return
 		}
 		var c Conversation
-		var parent, fork sql.NullInt64
+		var parent, forkEvent sql.NullInt64
 		if txErr = tx.QueryRow(`SELECT id,job_id,parent_conversation_id,fork_event_id,title,status,created_at,updated_at FROM job_conversations WHERE id=?`, id).
-			Scan(&c.ID, &c.JobID, &parent, &fork, &c.Title, &c.Status, &c.CreatedAt, &c.UpdatedAt); txErr != nil {
+			Scan(&c.ID, &c.JobID, &parent, &forkEvent, &c.Title, &c.Status, &c.CreatedAt, &c.UpdatedAt); txErr != nil {
+			cleanup(remote)
 			fail(w, http.StatusInternalServerError, "could not create branches")
 			return
 		}
-		c.ParentConversationID, c.ForkEventID = &parent.Int64, &fork.Int64
+		c.ParentConversationID, c.ForkEventID = &parent.Int64, &forkEvent.Int64
 		created = append(created, c)
-		prompt, promptErr := a.forkPrompt(jobID, parentID, input.ForkEventID, reply)
-		if promptErr != nil {
-			fail(w, http.StatusInternalServerError, "could not create branch context")
-			return
-		}
-		pending = append(pending, pendingFork{id: id, session: sessionID, prompt: prompt})
+		pending = append(pending, pendingFork{id: id, session: fork.session, message: fork.reply})
 	}
 	if err = tx.Commit(); err != nil {
+		cleanup(remote)
 		fail(w, http.StatusInternalServerError, "could not create branches")
 		return
 	}
 	jsonOut(w, http.StatusCreated, map[string]any{"conversations": created})
 	a.signal()
 	for _, fork := range pending {
-		a.runConversationHermes(jobID, fork.id, fork.session, fork.prompt)
+		a.runConversationHermes(jobID, fork.id, fork.session, fork.message)
 	}
 }
 
-func (a *App) forkPrompt(jobID, parentID, forkEventID int64, openingReply string) (string, error) {
-	var task, done string
-	if err := a.DB.QueryRow(`SELECT task,done_definition FROM jobs WHERE id=?`, jobID).Scan(&task, &done); err != nil {
-		return "", err
+func conversationTitle(reply string) string {
+	titleRunes := []rune(reply)
+	if len(titleRunes) <= 60 {
+		return reply
 	}
-	rows, err := a.DB.Query(`SELECT kind,content FROM job_events
-		WHERE conversation_id=? AND id<=? ORDER BY id DESC`, parentID, forkEventID)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	blocks := []string{}
-	remaining := maxForkTranscriptBytes
-	for rows.Next() {
-		var kind, content string
-		if err = rows.Scan(&kind, &content); err != nil {
-			return "", err
-		}
-		role := "History"
-		if kind == "comment" || kind == "input" {
-			role = "User"
-		} else if kind == "reply" || kind == "output" {
-			role = "Assistant"
-		}
-		block := fmt.Sprintf("%s: %s\n\n", role, content)
-		if len(block) > remaining {
-			block = block[:remaining]
-			for len(block) > 0 && !utf8.ValidString(block) {
-				block = block[:len(block)-1]
-			}
-		}
-		if block != "" {
-			blocks = append(blocks, block)
-			remaining -= len(block)
-		}
-		if remaining == 0 {
-			break
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return "", err
-	}
-	var transcript strings.Builder
-	for i := len(blocks) - 1; i >= 0; i-- {
-		transcript.WriteString(blocks[i])
-	}
-	doneContext := ""
-	var projectName, projectDirectory string
-	projectErr := a.DB.QueryRow(`SELECT p.name,p.directory FROM jobs j
-		JOIN columns c ON c.lane_id=j.lane_id JOIN projects p ON p.id=c.project_id
-		WHERE j.id=?`, jobID).Scan(&projectName, &projectDirectory)
-	prefix := fmt.Sprintf("Continue a new conversation branch for this Paragentix job.\nJob: %s", task)
-	if projectErr == nil {
-		prefix = initialHermesPrompt(projectName, projectDirectory, task, done)
-	} else if done != "" {
-		doneContext = "\nDone definition: " + done
-		prefix += doneContext
-	}
-	return fmt.Sprintf("%s\n\nContinue in a new branch from this parent conversation through the selected fork point:\n%sUser opening reply: %s",
-		prefix, transcript.String(), openingReply), nil
+	return strings.TrimSpace(string(titleRunes[:57])) + "..."
 }
 
 func (a *App) conversationWorkspaceID(jobID int64) (int64, error) {
@@ -378,40 +355,251 @@ func (a *App) conversationWorkspaceID(jobID int64) (int64, error) {
 	return workspaceID, err
 }
 
-func (a *App) runConversationHermes(jobID, conversationID int64, sessionID, prompt string) {
+func (a *App) conversationHermesSource(jobID, conversationID int64) (int64, string, error) {
+	workspaceID, err := a.conversationWorkspaceID(jobID)
+	if err != nil {
+		return 0, "", err
+	}
+	var sessionID string
+	var isMain bool
+	if err = a.DB.QueryRow(`SELECT hermes_session_id,parent_conversation_id IS NULL
+		FROM job_conversations WHERE id=? AND job_id=?`, conversationID, jobID).Scan(&sessionID, &isMain); err != nil {
+		return 0, "", err
+	}
+	if isMain {
+		var stored string
+		if err = a.DB.QueryRow(`SELECT tmux_session FROM job_runs
+			WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1`, jobID).Scan(&stored); err != nil {
+			return 0, "", err
+		}
+		sessionID = strings.TrimPrefix(stored, "hermes-api:")
+		if sessionID == "" {
+			return 0, "", sql.ErrNoRows
+		}
+		if _, err = a.DB.Exec(`UPDATE job_conversations SET hermes_session_id=?,updated_at=CURRENT_TIMESTAMP
+			WHERE id=? AND hermes_session_id<>?`, sessionID, conversationID, sessionID); err != nil {
+			return 0, "", err
+		}
+	}
+	if sessionID == "" {
+		return 0, "", sql.ErrNoRows
+	}
+	return workspaceID, sessionID, nil
+}
+
+func (a *App) hermesWorkspaceConfig(workspaceID int64) (string, string, error) {
+	var base, key string
+	err := a.DB.QueryRow(`SELECT hermes_url,hermes_api_key FROM workspaces WHERE id=?`, workspaceID).Scan(&base, &key)
+	if err != nil {
+		return "", "", err
+	}
+	base = strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")
+	if base == "" || key == "" {
+		return "", "", fmt.Errorf("Hermes API is not configured")
+	}
+	return base, key, nil
+}
+
+func (a *App) forkHermesSession(ctx context.Context, workspaceID int64, sourceID, requestedID, title string) (string, error) {
+	base, key, err := a.hermesWorkspaceConfig(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]string{"id": requestedID, "title": title})
+	if err != nil {
+		return "", err
+	}
+	endpoint := base + "/api/sessions/" + url.PathEscape(sourceID) + "/fork"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("Hermes fork error %d: %s", res.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var out struct {
+		Object  string `json:"object"`
+		Session struct {
+			ID              string `json:"id"`
+			ParentSessionID string `json:"parent_session_id"`
+		} `json:"session"`
+	}
+	if err = json.Unmarshal(responseBody, &out); err != nil || out.Object != "hermes.session" ||
+		out.Session.ID == "" || out.Session.ParentSessionID != sourceID {
+		return "", fmt.Errorf("invalid Hermes fork response")
+	}
+	return out.Session.ID, nil
+}
+
+func (a *App) deleteHermesSession(ctx context.Context, workspaceID int64, sessionID string) error {
+	base, key, err := a.hermesWorkspaceConfig(workspaceID)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+"/api/sessions/"+url.PathEscape(sessionID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("Hermes delete error %d", res.StatusCode)
+	}
+	return nil
+}
+
+func (a *App) chatHermesSession(ctx context.Context, workspaceID int64, sessionID, message string) (string, error) {
+	base, key, err := a.hermesWorkspaceConfig(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]string{"message": message})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		base+"/api/sessions/"+url.PathEscape(sessionID)+"/chat", strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("Hermes chat error %d: %s", res.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var out struct {
+		Object    string `json:"object"`
+		SessionID string `json:"session_id"`
+		Message   struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err = json.Unmarshal(responseBody, &out); err != nil || out.Object != "hermes.session.chat.completion" ||
+		out.Message.Content == "" ||
+		(out.SessionID != "" && out.SessionID != sessionID) {
+		return "", fmt.Errorf("invalid Hermes chat response")
+	}
+	return out.Message.Content, nil
+}
+
+func (a *App) runConversationHermes(jobID, conversationID int64, sessionID, message string) {
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 		workspaceID, err := a.conversationWorkspaceID(jobID)
 		var reply string
 		if err == nil {
-			reply, err = a.runHermesSession(context.Background(), workspaceID, prompt, sessionID)
+			reply, err = a.chatHermesSession(context.Background(), workspaceID, sessionID, message)
 		}
-		tx, txErr := a.DB.Begin()
-		if txErr != nil {
-			return
-		}
-		defer tx.Rollback()
 		kind, content, status := "reply", reply, "ready_to_merge"
 		if err != nil {
 			kind, content, status = "error", err.Error(), "waiting"
 		}
-		var currentSession, currentStatus string
-		if txErr = tx.QueryRow(`SELECT hermes_session_id,status FROM job_conversations WHERE id=?`, conversationID).
-			Scan(&currentSession, &currentStatus); txErr != nil || currentSession != sessionID || currentStatus != "active" {
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-a.stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+
+		persistErr := a.persistConversationCompletionWithRetry(ctx, jobID, conversationID, sessionID, kind, content, status)
+		if persistErr == nil || errors.Is(persistErr, errConversationCompletionStale) {
 			return
 		}
-		if txErr = appendConversationEventTx(tx, jobID, conversationID, kind, content); txErr == nil {
-			_, txErr = tx.Exec(`UPDATE job_conversations SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='active' AND hermes_session_id=?`,
-				status, conversationID, sessionID)
-		}
-		if txErr == nil {
-			txErr = tx.Commit()
-		}
-		if txErr == nil {
-			a.signal()
+		fallback := fmt.Sprintf("Hermes completion could not be persisted: %v", persistErr)
+		fallbackErr := a.persistConversationCompletion(ctx, jobID, conversationID, sessionID, "error", fallback, "waiting")
+		if fallbackErr != nil && !errors.Is(fallbackErr, errConversationCompletionStale) {
+			log.Printf("conversation %d Hermes completion persistence failed: %v; fallback failed: %v", conversationID, persistErr, fallbackErr)
 		}
 	}()
+}
+
+func (a *App) persistConversationCompletionWithRetry(ctx context.Context, jobID, conversationID int64, sessionID, kind, content, status string) error {
+	var err error
+	for attempt := 0; attempt < conversationCompletionAttempts; attempt++ {
+		err = a.persistConversationCompletion(ctx, jobID, conversationID, sessionID, kind, content, status)
+		if err == nil || errors.Is(err, errConversationCompletionStale) || !isSQLiteBusy(err) {
+			return err
+		}
+		if attempt+1 == conversationCompletionAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(25*(1<<attempt)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (a *App) persistConversationCompletion(ctx context.Context, jobID, conversationID int64, sessionID, kind, content, status string) error {
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE job_conversations SET status=?,updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND job_id=? AND status='active' AND hermes_session_id=?`,
+		status, conversationID, jobID, sessionID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return errConversationCompletionStale
+	}
+	if err = appendConversationEventTx(tx, jobID, conversationID, kind, content); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	a.signal()
+	return nil
+}
+
+func isSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 func (a *App) conversationEvents(w http.ResponseWriter, conversationID int64) {
@@ -472,22 +660,13 @@ func (a *App) conversationComment(w http.ResponseWriter, r *http.Request, conver
 		fail(w, http.StatusConflict, "conversation is already receiving an agent reply")
 		return
 	}
-	prompt := input.Comment
 	if sessionID == "" {
-		sessionID = token()
-		var latestEventID int64
-		if err = tx.QueryRow(`SELECT COALESCE(MAX(id),0) FROM job_events WHERE conversation_id=?`, conversationID).Scan(&latestEventID); err != nil {
-			fail(w, http.StatusInternalServerError, "could not restore conversation context")
-			return
-		}
-		if prompt, err = a.forkPrompt(jobID, conversationID, latestEventID, input.Comment); err != nil {
-			fail(w, http.StatusInternalServerError, "could not restore conversation context")
-			return
-		}
+		fail(w, http.StatusConflict, "conversation Hermes session is unavailable")
+		return
 	}
 	if err = appendConversationEventTx(tx, jobID, conversationID, "comment", input.Comment); err == nil {
-		_, err = tx.Exec(`UPDATE job_conversations SET status='active',hermes_session_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status<>'active'`,
-			sessionID, conversationID)
+		_, err = tx.Exec(`UPDATE job_conversations SET status='active',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status<>'active'`,
+			conversationID)
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -498,7 +677,7 @@ func (a *App) conversationComment(w http.ResponseWriter, r *http.Request, conver
 	}
 	jsonOut(w, http.StatusOK, map[string]bool{"ok": true})
 	a.signal()
-	a.runConversationHermes(jobID, conversationID, sessionID, prompt)
+	a.runConversationHermes(jobID, conversationID, sessionID, input.Comment)
 }
 
 func (a *App) mergePreview(w http.ResponseWriter, sourceID int64) {

@@ -17,6 +17,49 @@ import (
 
 func conversationFixture(t *testing.T) (*App, http.Handler, *http.Cookie, int64, int64) {
 	t.Helper()
+	var sessionMu sync.Mutex
+	sessions := map[string]string{"main-hermes-session": ""}
+	hermes := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/fork") && r.Method == http.MethodPost {
+			var body struct {
+				ID    string `json:"id"`
+				Title string `json:"title"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			source := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/fork")
+			sessionMu.Lock()
+			sessions[body.ID] = source
+			sessionMu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{
+				"object":  "hermes.session",
+				"session": map[string]any{"id": body.ID, "parent_session_id": source, "title": body.Title},
+			})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/chat") && r.Method == http.MethodPost {
+			json.NewEncoder(w).Encode(map[string]any{
+				"object":     "hermes.session.chat.completion",
+				"session_id": strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/chat"),
+				"message":    map[string]any{"role": "assistant", "content": "fixture reply"},
+			})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+			sessionMu.Lock()
+			delete(sessions, id)
+			sessionMu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session.deleted", "id": id, "deleted": true})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(hermes.Close)
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +81,10 @@ func conversationFixture(t *testing.T) (*App, http.Handler, *http.Cookie, int64,
 	if err = a.appendJobEvent(jobID, "reply", "Initial agent answer"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = a.DB.Exec(`UPDATE job_runs SET tmux_session='hermes-api:main-hermes-session' WHERE job_id=?`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	configureConversationHermes(t, a, jobID, hermes.URL)
 	var mainID int64
 	if err = a.DB.QueryRow(`SELECT id FROM job_conversations WHERE job_id=? AND parent_conversation_id IS NULL`, jobID).Scan(&mainID); err != nil {
 		t.Fatal(err)
@@ -102,36 +149,44 @@ func attachConversationProject(t *testing.T, a *App, jobID int64, directory stri
 
 func TestForkRunsARealScopedHermesConversationAndReusesItsSession(t *testing.T) {
 	var mu sync.Mutex
-	var sessions, prompts []string
+	var requests []struct {
+		method, path, auth string
+		body               map[string]any
+	}
+	forkCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-		json.NewDecoder(r.Body).Decode(&input)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
 		mu.Lock()
-		sessions = append(sessions, r.Header.Get("X-Hermes-Session-Id"))
-		prompts = append(prompts, input.Messages[0].Content)
-		call := len(prompts)
+		requests = append(requests, struct {
+			method, path, auth string
+			body               map[string]any
+		}{r.Method, r.URL.Path, r.Header.Get("Authorization"), body})
+		if strings.HasSuffix(r.URL.Path, "/fork") {
+			forkCalls++
+		}
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"agent reply ` + itoa(int64(call)) + `"}}]}`))
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/fork"):
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"object":"hermes.session","session":{"id":"returned-fork-session","parent_session_id":"latest-parent-session"}}`))
+		case strings.HasSuffix(r.URL.Path, "/chat"):
+			w.Write([]byte(`{"object":"hermes.session.chat.completion","session_id":"returned-fork-session","message":{"role":"assistant","content":"agent reply"}}`))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
 	a, h, cookie, jobID, mainID := conversationFixture(t)
 	defer a.Close()
-	attachConversationProject(t, a, jobID, "/srv/branch-project")
 	configureConversationHermes(t, a, jobID, server.URL)
+	a.DB.Exec(`UPDATE job_conversations SET hermes_session_id='stale-parent-session' WHERE id=?`, mainID)
+	a.DB.Exec(`INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:older-parent-session','done',CURRENT_TIMESTAMP)`, jobID)
+	a.DB.Exec(`INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,2,'hermes-api:latest-parent-session','done',CURRENT_TIMESTAMP)`, jobID)
 	var forkEvent int64
 	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id LIMIT 1`, mainID).Scan(&forkEvent)
-	if err := a.appendJobEvent(jobID, "reply", "Later parent answer must not leak"); err != nil {
-		t.Fatal(err)
-	}
-	var mainRun, mainEvents int64
-	a.DB.QueryRow(`SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1`, jobID).Scan(&mainRun)
-	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id=?`, mainID).Scan(&mainEvents)
 
 	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(mainID)+"/forks",
 		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["Explore the branch"]}`)
@@ -152,37 +207,61 @@ func TestForkRunsARealScopedHermesConversationAndReusesItsSession(t *testing.T) 
 	waitForConversation(t, a, childID, "ready_to_merge", 2)
 
 	mu.Lock()
-	gotSessions := append([]string(nil), sessions...)
-	gotPrompts := append([]string(nil), prompts...)
+	got := append([]struct {
+		method, path, auth string
+		body               map[string]any
+	}(nil), requests...)
 	mu.Unlock()
-	if len(gotSessions) != 2 || gotSessions[0] == "" || gotSessions[0] != gotSessions[1] {
-		t.Fatalf("Hermes sessions=%q", gotSessions)
+	if forkCalls != 1 || len(got) != 3 {
+		t.Fatalf("Hermes requests=%+v fork calls=%d", got, forkCalls)
 	}
-	if !strings.Contains(gotPrompts[0], "Initial agent answer") ||
-		!strings.Contains(gotPrompts[0], "Explore the branch") ||
-		!strings.Contains(gotPrompts[0], "/srv/branch-project") ||
-		!strings.Contains(gotPrompts[0], "direct terminal tool") ||
-		strings.Contains(gotPrompts[0], "Later parent answer must not leak") {
-		t.Fatalf("fork prompt was not scoped to the selected event: %q", gotPrompts[0])
+	if got[0].method != http.MethodPost || got[0].path != "/api/sessions/latest-parent-session/fork" ||
+		got[0].auth != "Bearer secret" || got[0].body["title"] != "Explore the branch" ||
+		got[0].body["id"] == "" || len(got[0].body) != 2 {
+		t.Fatalf("fork request=%+v", got[0])
 	}
-	if gotPrompts[1] != "Follow up in this fork" {
-		t.Fatalf("follow-up prompt=%q", gotPrompts[1])
+	if got[1].path != "/api/sessions/returned-fork-session/chat" || got[1].auth != "Bearer secret" ||
+		len(got[1].body) != 1 || got[1].body["message"] != "Explore the branch" {
+		t.Fatalf("opening chat request=%+v", got[1])
 	}
-	var latestRun, mainEventsAfter int64
-	a.DB.QueryRow(`SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1`, jobID).Scan(&latestRun)
-	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id=?`, mainID).Scan(&mainEventsAfter)
-	if latestRun != mainRun || mainEventsAfter != mainEvents {
-		t.Fatalf("branch changed main run/timeline: run %d->%d events %d->%d", mainRun, latestRun, mainEvents, mainEventsAfter)
+	if got[2].path != "/api/sessions/returned-fork-session/chat" ||
+		len(got[2].body) != 1 || got[2].body["message"] != "Follow up in this fork" {
+		t.Fatalf("follow-up chat request=%+v", got[2])
+	}
+	var childSession, mainSession string
+	a.DB.QueryRow(`SELECT hermes_session_id FROM job_conversations WHERE id=?`, childID).Scan(&childSession)
+	a.DB.QueryRow(`SELECT hermes_session_id FROM job_conversations WHERE id=?`, mainID).Scan(&mainSession)
+	if childSession != "returned-fork-session" || mainSession != "latest-parent-session" {
+		t.Fatalf("persisted child=%q main=%q", childSession, mainSession)
 	}
 }
 
-func TestForkFailureBecomesWaitingInsteadOfFalselyActive(t *testing.T) {
-	a, h, cookie, _, mainID := conversationFixture(t)
+func TestForkUsesNestedConversationSessionAsSource(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/fork"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session", "session": map[string]any{
+				"id": body["id"], "parent_session_id": strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/fork"),
+			}})
+		case strings.HasSuffix(r.URL.Path, "/chat"):
+			w.Write([]byte(`{"object":"hermes.session.chat.completion","message":{"role":"assistant","content":"ok"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	a, h, cookie, jobID, mainID := conversationFixture(t)
 	defer a.Close()
+	configureConversationHermes(t, a, jobID, server.URL)
 	var forkEvent int64
 	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, mainID).Scan(&forkEvent)
 	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(mainID)+"/forks",
-		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["Cannot execute"]}`)
+		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["Child"]}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("fork: %d %s", w.Code, w.Body.String())
 	}
@@ -191,43 +270,41 @@ func TestForkFailureBecomesWaitingInsteadOfFalselyActive(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &created)
 	childID := created.Conversations[0].ID
-	waitForConversation(t, a, childID, "waiting", 0)
-	var errors int
-	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id=? AND kind='error'`, childID).Scan(&errors)
-	if errors != 1 {
-		t.Fatalf("branch errors=%d", errors)
+	waitForConversation(t, a, childID, "ready_to_merge", 1)
+	var childEvent int64
+	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, childID).Scan(&childEvent)
+	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(childID)+"/forks",
+		`{"forkEventId":`+itoa(childEvent)+`,"replies":["Grandchild"]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("nested fork: %d %s", w.Code, w.Body.String())
+	}
+	var childSession string
+	a.DB.QueryRow(`SELECT hermes_session_id FROM job_conversations WHERE id=?`, childID).Scan(&childSession)
+	if len(paths) < 3 || paths[2] != "/api/sessions/"+childSession+"/fork" {
+		t.Fatalf("nested requests=%q child session=%q", paths, childSession)
 	}
 }
 
-func TestForkPromptBoundsLargeParentEvents(t *testing.T) {
-	a, _, _, jobID, mainID := conversationFixture(t)
-	defer a.Close()
-	large := strings.Repeat("parent context ", 10000)
-	if err := a.appendJobEvent(jobID, "reply", large); err != nil {
-		t.Fatal(err)
-	}
-	var forkEvent int64
-	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, mainID).Scan(&forkEvent)
-	prompt, err := a.forkPrompt(jobID, mainID, forkEvent, "bounded opening")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(prompt) > 70<<10 || !strings.Contains(prompt, "bounded opening") {
-		t.Fatalf("fork prompt length=%d contains opening=%t", len(prompt), strings.Contains(prompt, "bounded opening"))
-	}
-}
-
-func TestLegacyStoredForkStartsHermesWithItsExistingHistory(t *testing.T) {
-	promptReceived := make(chan string, 1)
+func TestForkRemoteFailurePersistsNothingAndCleansUpEarlierSiblings(t *testing.T) {
+	var forkCount int
+	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/api/sessions/"))
+			w.Write([]byte(`{"deleted":true}`))
+			return
 		}
-		json.NewDecoder(r.Body).Decode(&input)
-		promptReceived <- input.Messages[0].Content
-		w.Write([]byte(`{"choices":[{"message":{"content":"recovered reply"}}]}`))
+		forkCount++
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if forkCount == 2 {
+			http.Error(w, `{"error":{"message":"fork unavailable"}}`, http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session", "session": map[string]any{
+			"id": "remote-first", "parent_session_id": "main-hermes-session",
+		}})
 	}))
 	defer server.Close()
 	a, h, cookie, jobID, mainID := conversationFixture(t)
@@ -235,31 +312,51 @@ func TestLegacyStoredForkStartsHermesWithItsExistingHistory(t *testing.T) {
 	configureConversationHermes(t, a, jobID, server.URL)
 	var forkEvent int64
 	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, mainID).Scan(&forkEvent)
-	result, err := a.DB.Exec(`INSERT INTO job_conversations(job_id,parent_conversation_id,fork_event_id,title,status)
-		VALUES(?,?,?,'legacy stored fork','waiting')`, jobID, mainID, forkEvent)
-	if err != nil {
-		t.Fatal(err)
+	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(mainID)+"/forks",
+		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["First","Second"]}`)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("fork failure: %d %s", w.Code, w.Body.String())
 	}
-	childID, _ := result.LastInsertId()
-	tx, _ := a.DB.Begin()
-	if err = appendConversationEventTx(tx, jobID, childID, "comment", "Legacy opening context"); err == nil {
-		err = tx.Commit()
+	var children int
+	a.DB.QueryRow(`SELECT count(*) FROM job_conversations WHERE parent_conversation_id=?`, mainID).Scan(&children)
+	if children != 0 || len(deleted) != 1 || deleted[0] != "remote-first" {
+		t.Fatalf("children=%d deleted=%q", children, deleted)
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(childID)+"/comment", `{"comment":"Recover this branch"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("recover comment: %d %s", w.Code, w.Body.String())
-	}
-	waitForConversation(t, a, childID, "ready_to_merge", 1)
-	select {
-	case prompt := <-promptReceived:
-		if !strings.Contains(prompt, "Legacy opening context") || !strings.Contains(prompt, "Recover this branch") {
-			t.Fatalf("recovery prompt=%q", prompt)
+}
+
+func TestForkOpeningChatFailureLeavesPersistedBranchWaiting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/fork") {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session", "session": map[string]any{
+				"id": body["id"], "parent_session_id": "main-hermes-session",
+			}})
+			return
 		}
-	default:
-		t.Fatal("Hermes prompt was not captured")
+		http.Error(w, `{"error":{"message":"agent unavailable"}}`, http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a, h, cookie, jobID, mainID := conversationFixture(t)
+	defer a.Close()
+	configureConversationHermes(t, a, jobID, server.URL)
+	var forkEvent int64
+	a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, mainID).Scan(&forkEvent)
+	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(mainID)+"/forks",
+		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["Persist after fork"]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Conversations []Conversation `json:"conversations"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+	waitForConversation(t, a, created.Conversations[0].ID, "waiting", 0)
+	var errors int
+	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id=? AND kind='error'`, created.Conversations[0].ID).Scan(&errors)
+	if errors != 1 {
+		t.Fatalf("chat errors=%d", errors)
 	}
 }
 
@@ -267,9 +364,18 @@ func TestActiveForkRejectsConcurrentCommentAndMergePreview(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/fork") {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session", "session": map[string]any{
+				"id": body["id"], "parent_session_id": "main-hermes-session",
+			}})
+			return
+		}
 		close(started)
 		<-release
-		w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+		w.Write([]byte(`{"object":"hermes.session.chat.completion","message":{"role":"assistant","content":"done"}}`))
 	}))
 	defer server.Close()
 	a, h, cookie, jobID, mainID := conversationFixture(t)
@@ -632,6 +738,94 @@ func TestConversationRelationshipsAreProtectedByDatabaseIntegrity(t *testing.T) 
 	}
 }
 
+func TestConcurrentSiblingHermesCompletionsAllPersist(t *testing.T) {
+	const siblings = 5
+	chatStarted := make(chan struct{}, siblings)
+	releaseChats := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseChats) })
+	var mu sync.Mutex
+	chatCalls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/fork"):
+			var body struct {
+				ID string `json:"id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			source := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/fork")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{
+				"object":  "hermes.session",
+				"session": map[string]any{"id": body.ID, "parent_session_id": source},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat"):
+			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/chat")
+			mu.Lock()
+			chatCalls[sessionID]++
+			mu.Unlock()
+			chatStarted <- struct{}{}
+			<-releaseChats
+			json.NewEncoder(w).Encode(map[string]any{
+				"object":     "hermes.session.chat.completion",
+				"session_id": sessionID,
+				"message":    map[string]any{"role": "assistant", "content": "completed " + sessionID},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	a, h, cookie, jobID, mainID := conversationFixture(t)
+	defer a.Close()
+	configureConversationHermes(t, a, jobID, server.URL)
+	var forkEvent int64
+	if err := a.DB.QueryRow(`SELECT id FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, mainID).Scan(&forkEvent); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := req(t, h, cookie, "POST", "/api/conversations/"+itoa(mainID)+"/forks",
+		`{"forkEventId":`+itoa(forkEvent)+`,"replies":["one","two","three","four","five"]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("forks: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Conversations []Conversation `json:"conversations"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Conversations) != siblings {
+		t.Fatalf("created siblings=%d; want %d", len(created.Conversations), siblings)
+	}
+	for i := 0; i < siblings; i++ {
+		select {
+		case <-chatStarted:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("Hermes chats started=%d; want %d", i, siblings)
+		}
+	}
+	releaseOnce.Do(func() { close(releaseChats) })
+
+	for _, conversation := range created.Conversations {
+		waitForConversation(t, a, conversation.ID, "ready_to_merge", 1)
+		var sessionID string
+		if err := a.DB.QueryRow(`SELECT hermes_session_id FROM job_conversations WHERE id=?`, conversation.ID).Scan(&sessionID); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		calls := chatCalls[sessionID]
+		mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("Hermes chat calls for %q=%d; want 1", sessionID, calls)
+		}
+	}
+}
+
 func TestConversationProgressCountsResolvedAndLimitsActionableRows(t *testing.T) {
 	a, h, cookie, jobID, mainID := conversationFixture(t)
 	defer a.Close()
@@ -652,9 +846,24 @@ func TestConversationProgressCountsResolvedAndLimitsActionableRows(t *testing.T)
 	for _, conversation := range out.Conversations {
 		ids = append(ids, conversation.ID)
 	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var replies int
+		a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id IN (?,?,?,?,?) AND kind='reply'`, ids[0], ids[1], ids[2], ids[3], ids[4]).Scan(&replies)
+		if replies == len(ids) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var replies int
+	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id IN (?,?,?,?,?) AND kind='reply'`, ids[0], ids[1], ids[2], ids[3], ids[4]).Scan(&replies)
+	if replies != len(ids) {
+		t.Fatalf("completed branch replies=%d; want %d", replies, len(ids))
+	}
 	a.DB.Exec(`UPDATE job_conversations SET status='waiting' WHERE id=?`, ids[1])
 	a.DB.Exec(`UPDATE job_conversations SET status='ready_to_merge' WHERE id=?`, ids[2])
 	a.DB.Exec(`UPDATE job_conversations SET status='waiting' WHERE id=?`, ids[3])
+	a.DB.Exec(`UPDATE job_conversations SET status='active' WHERE id=?`, ids[4])
 	var watermark, userID int64
 	a.DB.QueryRow(`SELECT max(id) FROM job_events WHERE conversation_id=?`, ids[0]).Scan(&watermark)
 	a.DB.QueryRow(`SELECT user_id FROM jobs WHERE id=?`, jobID).Scan(&userID)
@@ -695,7 +904,7 @@ func TestConversationCommentAcceptsAttachments(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &forked)
 	childID := forked.Conversations[0].ID
-	waitForConversation(t, a, childID, "waiting", 0)
+	waitForConversation(t, a, childID, "ready_to_merge", 1)
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	form.WriteField("comment", "Review this")
@@ -714,11 +923,11 @@ func TestConversationCommentAcceptsAttachments(t *testing.T) {
 		t.Fatalf("multipart comment: %d %s", response.Code, response.Body.String())
 	}
 	var content string
-	a.DB.QueryRow(`SELECT content FROM job_events WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, childID).Scan(&content)
+	a.DB.QueryRow(`SELECT content FROM job_events WHERE conversation_id=? AND kind='comment' ORDER BY id DESC LIMIT 1`, childID).Scan(&content)
 	if !strings.Contains(content, "Review this") || !strings.Contains(content, "notes.txt") || !strings.Contains(content, "branch context") {
 		t.Fatalf("attachment context missing: %q", content)
 	}
-	waitForConversation(t, a, childID, "waiting", 0)
+	waitForConversation(t, a, childID, "ready_to_merge", 2)
 	response, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(childID)+"/merge-preview", `{}`)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "branch context") || strings.Contains(response.Body.String(), "Attached file:") {
 		t.Fatalf("merge preview exposed raw attachment content: %d %s", response.Code, response.Body.String())
