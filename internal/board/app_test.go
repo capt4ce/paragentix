@@ -12,9 +12,218 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestJobEventSourceMessageKeyMigration(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	var sourceMessageKeyColumn int
+	if err = a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('job_events') WHERE name='source_message_key'`).Scan(&sourceMessageKeyColumn); err != nil {
+		t.Fatal(err)
+	}
+	if sourceMessageKeyColumn != 1 {
+		t.Fatalf("source_message_key columns=%d, want 1", sourceMessageKeyColumn)
+	}
+
+	req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"event-key@example.com","password":"password1"}`)
+	var user, lane int64
+	if err = a.DB.QueryRow("SELECT id FROM users WHERE email='event-key@example.com'").Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,position) VALUES(?,?,'work',0)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	res, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'hermes-api:test','running')", job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := res.LastInsertId()
+	if _, err = a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content,source_message_key) VALUES(?,1,'intermediary','first','message-1')", run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content,source_message_key) VALUES(?,2,'intermediary','duplicate','message-1')", run); err == nil {
+		t.Fatal("duplicate source_message_key in one run was inserted")
+	}
+	if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Fatalf("duplicate insert error=%v, want unique constraint", err)
+	}
+}
+
+func TestNormalizeHermesMessages(t *testing.T) {
+	tests := []struct {
+		name             string
+		messages         []hermesMessage
+		wantIntermediate []string
+		wantFinal        string
+	}{
+		{
+			name: "assistant commentary is retained and final is reserved",
+			messages: []hermesMessage{
+				{Role: "user", Content: "work"},
+				{ID: "progress-1", Role: "assistant", Content: "Delegating implementation"},
+				{Role: "tool", Content: `{"secret":"tool result"}`},
+				{ID: "final-1", Role: "assistant", Content: "Finished safely"},
+			},
+			wantIntermediate: []string{"Delegating implementation"},
+			wantFinal:        "Finished safely",
+		},
+		{
+			name: "unsafe and empty rows are skipped",
+			messages: []hermesMessage{
+				{Role: "assistant", Content: map[string]any{"tool_calls": []any{"raw arguments"}}},
+				{Role: "assistant", Content: "   "},
+				{Role: "user", Content: "private user text"},
+				{Role: "tool", Content: "private tool text"},
+				{Role: "assistant", Content: "Visible final"},
+			},
+			wantFinal: "Visible final",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			intermediates, final := normalizeHermesMessages(tc.messages)
+			var got []string
+			for _, message := range intermediates {
+				got = append(got, message.Content)
+			}
+			if strings.Join(got, "|") != strings.Join(tc.wantIntermediate, "|") {
+				t.Fatalf("intermediates=%v, want %v", got, tc.wantIntermediate)
+			}
+			if final != tc.wantFinal {
+				t.Fatalf("final=%q, want %q", final, tc.wantFinal)
+			}
+		})
+	}
+}
+
+func TestNormalizeHermesMessagesUsesStableSourceKeys(t *testing.T) {
+	messages := []hermesMessage{
+		{ID: "provider-message", Role: "assistant", Content: "With provider identity"},
+		{Role: "assistant", Content: "With fallback identity"},
+		{Role: "assistant", Content: "Final response"},
+	}
+	first, _ := normalizeHermesMessages(messages)
+	second, _ := normalizeHermesMessages(messages)
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("normalized lengths=%d,%d, want 2,2", len(first), len(second))
+	}
+	if first[0].SourceKey != "provider-message" {
+		t.Fatalf("provider source key=%q", first[0].SourceKey)
+	}
+	if first[1].SourceKey == "" || first[1].SourceKey != second[1].SourceKey {
+		t.Fatalf("fallback source keys=%q,%q, want equal non-empty keys", first[1].SourceKey, second[1].SourceKey)
+	}
+}
+
+func TestRunHermesJobPersistsRepeatedIntermediaryOnceBeforeReply(t *testing.T) {
+	var messageRequests atomic.Int32
+	var a *App
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				var intermediary int
+				if a != nil {
+					_ = a.DB.QueryRow("SELECT count(*) FROM job_events WHERE kind='intermediary' AND content='Delegating implementation'").Scan(&intermediary)
+				}
+				if intermediary == 1 {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices":[{"message":{"content":"Final response"}}]}`))
+		case "/api/sessions/active-session/messages":
+			messageRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[{"id":"progress-1","role":"assistant","content":"Delegating implementation"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var err error
+	a, err = Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"active-progress@example.com","password":"password1"}`)
+	var user, lane int64
+	if err = a.DB.QueryRow("SELECT id FROM users WHERE email='active-progress@example.com'").Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=? ORDER BY id LIMIT 1", user).Scan(&lane); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Lane 1',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position,attempt_count) VALUES(?,?,'work','in_progress',0,1)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	res, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'hermes-api:active-session','running')", job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := res.LastInsertId()
+
+	a.runHermesJob(job, run, "active-session", "work")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var state string
+		if err = a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state == "done" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job state=%q, message requests=%d, want done", state, messageRequests.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rows, err := a.DB.Query("SELECT kind,content FROM job_events WHERE job_run_id=? AND kind IN ('intermediary','reply') ORDER BY sequence", run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var kind, content string
+		if err = rows.Scan(&kind, &content); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, kind+":"+content)
+	}
+	if strings.Join(got, "|") != "intermediary:Delegating implementation|reply:Final response" {
+		t.Fatalf("events=%v", got)
+	}
+	if messageRequests.Load() < 1 {
+		t.Fatalf("message requests=%d, want active session polling", messageRequests.Load())
+	}
+}
 
 func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
@@ -409,6 +618,10 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 	requestSeen := make(chan struct{}, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/sessions/latest-session/messages" {
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
 		if got := r.Header.Get("X-Hermes-Session-Id"); got != "latest-session" {
 			t.Errorf("session header=%q, want latest-session", got)
 		}
@@ -493,7 +706,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, messages, wantState, wantRun string
 	}{
-		{"completed", `{"object":"list","data":[{"role":"user","content":"work"},{"role":"assistant","content":"finished remotely"}]}`, "done", "done"},
+		{"completed", `{"object":"list","data":[{"role":"user","content":"work"},{"id":"progress-1","role":"assistant","content":"Inspecting the repository"},{"id":"progress-2","role":"assistant","content":"Running focused tests"},{"id":"final-1","role":"assistant","content":"finished remotely"}]}`, "done", "done"},
 		{"active", `{"object":"list","data":[{"role":"user","content":"work"}]}`, "in_progress", "running"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -532,6 +745,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 			a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,1,'error','Execution session missing after server restart')", run)
 
 			a.reconcile()
+			a.reconcileHermes(job, run, "hermes-session")
 
 			var state, warning, runStatus string
 			a.DB.QueryRow("SELECT state,warning FROM jobs WHERE id=?", job).Scan(&state, &warning)
@@ -549,6 +763,23 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 				a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content='finished remotely'", run).Scan(&output)
 				if output != 1 {
 					t.Fatalf("recovered output events=%d", output)
+				}
+				rows, queryErr := a.DB.Query("SELECT content FROM job_events WHERE job_run_id=? AND kind='intermediary' ORDER BY sequence", run)
+				if queryErr != nil {
+					t.Fatal(queryErr)
+				}
+				var intermediaries []string
+				for rows.Next() {
+					var content string
+					if queryErr = rows.Scan(&content); queryErr != nil {
+						rows.Close()
+						t.Fatal(queryErr)
+					}
+					intermediaries = append(intermediaries, content)
+				}
+				rows.Close()
+				if strings.Join(intermediaries, "|") != "Inspecting the repository|Running focused tests" {
+					t.Fatalf("recovered intermediaries=%v", intermediaries)
 				}
 			}
 		})

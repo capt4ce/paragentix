@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS lanes(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',UNIQUE(lane_id,position));
 CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,attempt INTEGER NOT NULL,tmux_session TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,ended_at TEXT,result_summary TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS job_attachments(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,name TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_id,name));
-CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));
+CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,source_message_key TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,job_id INTEGER REFERENCES jobs ON DELETE CASCADE,job_run_id INTEGER REFERENCES job_runs ON DELETE CASCADE,invitation_id INTEGER REFERENCES workspace_invitations ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('done','error','invitation')),title TEXT NOT NULL,read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,kind),UNIQUE(invitation_id,kind));
 CREATE INDEX IF NOT EXISTS notifications_user_id ON notifications(user_id,id DESC);`)
 	if e != nil {
@@ -63,6 +63,15 @@ UPDATE workspaces SET hermes_url=COALESCE((SELECT hermes_url FROM user_settings 
 		_, e = a.DB.Exec(`INSERT INTO workspaces(user_id,name,root) SELECT s.user_id,'Default',s.workspace_root FROM user_settings s WHERE NOT EXISTS(SELECT 1 FROM workspaces w WHERE w.user_id=s.user_id AND w.root=s.workspace_root AND w.root<>'')`)
 		if e == nil {
 			_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspace_members(workspace_id,user_id,role) SELECT id,user_id,'owner' FROM workspaces; INSERT OR IGNORE INTO projects(user_id,workspace_id,name,directory) SELECT user_id,id,'Default Project',root FROM workspaces WHERE root<>''; UPDATE columns SET project_id=(SELECT p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.id=columns.board_id ORDER BY p.id LIMIT 1) WHERE project_id IS NULL;`)
+		}
+	}
+	if e == nil {
+		var sourceMessageKeyColumn int
+		if e = a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('job_events') WHERE name='source_message_key'`).Scan(&sourceMessageKeyColumn); e == nil && sourceMessageKeyColumn == 0 {
+			_, e = a.DB.Exec(`ALTER TABLE job_events ADD COLUMN source_message_key TEXT`)
+		}
+		if e == nil {
+			_, e = a.DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS job_events_source_message_key ON job_events(job_run_id,source_message_key) WHERE source_message_key IS NOT NULL`)
 		}
 	}
 	if e == nil {

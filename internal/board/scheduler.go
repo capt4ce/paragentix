@@ -2,6 +2,7 @@ package board
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -200,20 +201,55 @@ func (a *App) retryHermes(id int64, state string) error {
 }
 
 func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		var workspace int64
-		a.DB.QueryRow("SELECT b.workspace_id FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id WHERE j.id=?", id).Scan(&workspace)
-		out, e := a.runHermesSession(context.Background(), workspace, prompt, sessionID)
-		if e != nil {
-			a.block(id, run, e.Error())
+		if err := a.DB.QueryRow("SELECT b.workspace_id FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id WHERE j.id=?", id).Scan(&workspace); err != nil {
+			a.block(id, run, err.Error())
 			return
 		}
-		a.appendJobEvent(id, "reply", out)
-		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", out, run)
-		a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
-		a.appendJobEvent(id, "status", statusContent("in_progress", "done"))
-		a.notify(id, run, "done")
-		a.signal()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		type completion struct {
+			output string
+			err    error
+		}
+		completed := make(chan completion, 1)
+		go func() {
+			output, err := a.runHermesSession(ctx, workspace, prompt, sessionID)
+			completed <- completion{output: output, err: err}
+		}()
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		a.syncHermesIntermediaries(id, run, sessionID, "")
+		for {
+			select {
+			case <-a.stop:
+				return
+			case result := <-completed:
+				if !a.hermesRunActive(id, run) {
+					return
+				}
+				if result.err != nil {
+					a.block(id, run, result.err.Error())
+					return
+				}
+				a.syncHermesIntermediaries(id, run, sessionID, result.output)
+				a.appendJobEvent(id, "reply", result.output)
+				a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", result.output, run)
+				a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+				a.appendJobEvent(id, "status", statusContent("in_progress", "done"))
+				a.notify(id, run, "done")
+				a.signal()
+				return
+			case <-tick.C:
+				if !a.hermesRunActive(id, run) {
+					return
+				}
+				a.syncHermesIntermediaries(id, run, sessionID, "")
+			}
+		}
 	}()
 }
 
@@ -295,10 +331,94 @@ type hermesSession struct {
 	} `json:"session"`
 }
 type hermesMessages struct {
-	Data []struct {
-		Role    string `json:"role"`
-		Content any    `json:"content"`
-	} `json:"data"`
+	Data []hermesMessage `json:"data"`
+}
+type hermesMessage struct {
+	ID      string `json:"id"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+type normalizedHermesMessage struct {
+	SourceKey string
+	Content   string
+}
+
+func normalizeHermesMessages(messages []hermesMessage) ([]normalizedHermesMessage, string) {
+	assistant := normalizeHermesAssistantMessages(messages)
+	if len(assistant) == 0 {
+		return nil, ""
+	}
+	final := assistant[len(assistant)-1].Content
+	return assistant[:len(assistant)-1], final
+}
+
+func normalizeHermesAssistantMessages(messages []hermesMessage) []normalizedHermesMessage {
+	assistant := make([]normalizedHermesMessage, 0)
+	for index, message := range messages {
+		if message.Role != "assistant" {
+			continue
+		}
+		content, ok := message.Content.(string)
+		if !ok {
+			continue
+		}
+		content = strings.TrimSpace(content)
+		if content == "" {
+			continue
+		}
+		sourceKey := message.ID
+		if sourceKey == "" {
+			sourceKey = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", message.Role, index, content))))
+		}
+		assistant = append(assistant, normalizedHermesMessage{SourceKey: sourceKey, Content: content})
+	}
+	return assistant
+}
+
+func (a *App) hermesRunActive(job, run int64) bool {
+	var active int
+	_ = a.DB.QueryRow(`SELECT count(*) FROM job_runs r JOIN jobs j ON j.id=r.job_id
+		WHERE r.id=? AND r.job_id=? AND r.status='running' AND j.state='in_progress'
+		AND r.id=(SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1)`, run, job, job).Scan(&active)
+	return active == 1
+}
+
+func (a *App) syncHermesIntermediaries(job, run int64, sessionID, finalOutput string) error {
+	var messages hermesMessages
+	if err := a.hermesGet(job, "/api/sessions/"+sessionID+"/messages", &messages); err != nil {
+		return err
+	}
+	return a.persistHermesIntermediaries(job, run, messages.Data, finalOutput)
+}
+
+func (a *App) persistHermesIntermediaries(job, run int64, messages []hermesMessage, finalOutput string) error {
+	intermediaries := normalizeHermesAssistantMessages(messages)
+	if len(intermediaries) == 0 {
+		return nil
+	}
+	if finalOutput == "" || intermediaries[len(intermediaries)-1].Content == strings.TrimSpace(finalOutput) {
+		intermediaries = intermediaries[:len(intermediaries)-1]
+	}
+	if len(intermediaries) == 0 {
+		return nil
+	}
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var conversation sql.NullInt64
+	if err = tx.QueryRow("SELECT id FROM job_conversations WHERE job_id=? AND parent_conversation_id IS NULL", job).Scan(&conversation); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	for _, message := range intermediaries {
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO job_events(job_run_id,sequence,kind,content,conversation_id,source_message_key)
+			SELECT ?,COALESCE(MAX(sequence),0)+1,'intermediary',?,?,? FROM job_events WHERE job_run_id=?`,
+			run, message.Content, conversation, message.SourceKey, run); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *App) hermesGet(job int64, path string, out any) error {
@@ -328,23 +448,9 @@ func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
 	if a.hermesGet(job, "/api/sessions/"+sessionID, &session) != nil || a.hermesGet(job, "/api/sessions/"+sessionID+"/messages", &messages) != nil {
 		return false
 	}
-	output := ""
-	for _, message := range messages.Data {
-		if message.Role == "user" {
-			output = ""
-		}
-		if message.Role == "assistant" {
-			switch content := message.Content.(type) {
-			case string:
-				output = content
-			default:
-				if b, err := json.Marshal(content); err == nil {
-					output = string(b)
-				}
-			}
-		}
-	}
+	_, output := normalizeHermesMessages(messages.Data)
 	if output != "" {
+		_ = a.persistHermesIntermediaries(job, run, messages.Data, output)
 		var count int
 		a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content=?", run, output).Scan(&count)
 		if count == 0 {

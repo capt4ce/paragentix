@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -517,6 +517,55 @@ describe("job actions", () => {
   });
 });
 describe("chat conversations", () => {
+  it("groups consecutive intermediary events in a closed activity section with the latest preview", () => {
+    const { container, getByText } = render(createElement(JobTimeline, {
+      state: "done",
+      events: [
+        { id: 1, kind: "intermediary", content: "Inspecting the repository", created_at: "14:30" },
+        { id: 2, kind: "intermediary", content: "Running focused tests", created_at: "14:31" },
+        { id: 3, kind: "reply", content: "Final response", created_at: "14:32" },
+      ],
+    }));
+    const activity = container.querySelector("details");
+    expect(activity).toBeTruthy();
+    expect(activity?.hasAttribute("open")).toBe(false);
+    expect(getByText("2 processing updates · Latest: Running focused tests")).toBeTruthy();
+    expect(activity?.textContent).toContain("14:30");
+    expect(activity?.textContent).toContain("Inspecting the repository");
+    expect(getByText("Final response").closest(".bubble.received")).toBeTruthy();
+  });
+
+  it("does not merge intermediary groups across comment or status boundaries", () => {
+    const { container } = render(createElement(JobTimeline, {
+      state: "done",
+      events: [
+        { id: 1, kind: "intermediary", content: "First run update" },
+        { id: 2, kind: "comment", content: "Continue" },
+        { id: 3, kind: "intermediary", content: "Second run update" },
+        { id: 4, kind: "status", content: "Status changed" },
+        { id: 5, kind: "intermediary", content: "Third run update" },
+      ],
+    }));
+    expect(container.querySelectorAll("details")).toHaveLength(3);
+  });
+
+  it("shows an accessible provider processing indicator for in-progress jobs", () => {
+    const { container, getByRole } = render(createElement(JobTimeline, {
+      state: "in_progress",
+      events: [{ id: 1, kind: "comment", content: "Please continue" }],
+    }));
+    const status = getByRole("status");
+    expect(status.textContent).toContain("Provider is processing…");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status).toBe(container.querySelector(".processing-indicator"));
+    expect(status.querySelector(".processing-dots")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it.each(["todo", "blocked", "done"])("does not show processing for %s jobs", (state) => {
+    const { queryByRole } = render(createElement(JobTimeline, { state, events: [] }));
+    expect(queryByRole("status")).toBeNull();
+  });
+
   it("places user input on the right and provider output on the left", () => {
     expect(eventSide("comment")).toBe("sent");
     expect(eventSide("input")).toBe("sent");
@@ -563,7 +612,7 @@ describe("chat conversations", () => {
     expect(isConversationEvent("reply")).toBe(true);
     expect(isConversationEvent("status")).toBe(false);
     expect(isConversationEvent("output")).toBe(false);
-    expect(app).toContain('isConversationEvent(e.kind) ? `bubble ${eventSide(e.kind)}` : "timeline-entry"');
+    expect(app).toContain('isConversationEvent(event.kind) ? `bubble ${eventSide(event.kind)}` : "timeline-entry"');
     expect(css).toMatch(/\.bubble\.received\{[^}]*background:/);
     expect(css).toMatch(/\.bubble\.sent\{[^}]*background:/);
     expect(entryRule).toContain("color:#95a4b8");

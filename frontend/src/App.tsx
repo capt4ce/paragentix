@@ -57,6 +57,68 @@ export function TimelineContent({ content }: { content: string }) {
   parts.push(content.slice(lastIndex));
   return <>{parts}</>;
 }
+type TimelineGroup =
+  | { kind: "intermediary"; events: any[] }
+  | { kind: "event"; event: any };
+export function groupTimelineEvents(events: any[]): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  for (const event of events) {
+    const latest = groups.at(-1);
+    if (event.kind === "intermediary" && latest?.kind === "intermediary") {
+      latest.events.push(event);
+    } else if (event.kind === "intermediary") {
+      groups.push({ kind: "intermediary", events: [event] });
+    } else {
+      groups.push({ kind: "event", event });
+    }
+  }
+  return groups;
+}
+const intermediaryPreview = (content: string) => {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length > 80 ? normalized.slice(0, 77) + "..." : normalized;
+};
+function TimelineEvent({ event }: { event: any }) {
+  return (
+    <div className={`${isConversationEvent(event.kind) ? `bubble ${eventSide(event.kind)}` : "timeline-entry"} ${event.kind}`}>
+      <small>{eventSide(event.kind) === "sent" ? "You" : eventLabel(event.kind)}</small>
+      <span><TimelineContent content={event.content} /></span>
+    </div>
+  );
+}
+export function JobTimeline({ events = [], state }: { events?: any[]; state: string }) {
+  const groups = groupTimelineEvents(events);
+  return (
+    <div className="conversation">
+      {groups.length ? groups.map((group) => {
+        if (group.kind === "event") {
+          return <TimelineEvent key={group.event.id} event={group.event} />;
+        }
+        const latest = group.events.at(-1);
+        const count = group.events.length;
+        return (
+          <details className="intermediary-group" key={`intermediary-${group.events[0].id}`}>
+            <summary>{count} processing {count === 1 ? "update" : "updates"} · Latest: {intermediaryPreview(latest.content)}</summary>
+            <div className="intermediary-list">
+              {group.events.map((event) => (
+                <div className="intermediary-update" key={event.id}>
+                  {event.created_at && <time>{event.created_at}</time>}
+                  <span><TimelineContent content={event.content} /></span>
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      }) : <p>No output yet</p>}
+      {state === "in_progress" && (
+        <div className="processing-indicator" role="status" aria-live="polite">
+          <span className="processing-dots" aria-hidden="true"><i /><i /><i /></span>
+          <span>Provider is processing…</span>
+        </div>
+      )}
+    </div>
+  );
+}
 export const mergeNotifications = (current: any[], incoming: any[]) => [
   ...current,
   ...incoming.filter((x) => !current.some((y) => y.id === x.id)),
@@ -306,22 +368,7 @@ function JobDetail({
         View conversation detail
       </a>
       <h3>Timeline</h3>
-      <div className="conversation">
-        {j.events?.length ? (
-          j.events.map((e: any) => (
-            <div key={e.id} className={`${isConversationEvent(e.kind) ? `bubble ${eventSide(e.kind)}` : "timeline-entry"} ${e.kind}`}>
-              <small>
-                {eventSide(e.kind) === "sent"
-                  ? "You"
-                  : eventLabel(e.kind)}
-              </small>
-              <span><TimelineContent content={e.content} /></span>
-            </div>
-          ))
-        ) : (
-          <p>No output yet</p>
-        )}
-      </div>
+      <JobTimeline events={j.events} state={j.state} />
       {canComment(j.state) && (
         <div className="commentbox">
           <div className="commentbox-row">
