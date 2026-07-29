@@ -38,6 +38,7 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 		for jr.Next() {
 			var j Job
 			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
+			j.ConversationProgress = a.conversationProgressForJob(j.ID)
 			l.Jobs = append(l.Jobs, j)
 		}
 		jr.Close()
@@ -135,6 +136,10 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		return
 	}
 	id, _ := res.LastInsertId()
+	if _, err = tx.Exec("INSERT INTO job_conversations(job_id,title,status) VALUES(?,'Main','active')", id); err != nil {
+		fail(w, 500, "could not create job conversation")
+		return
+	}
 	for _, attachment := range attachments {
 		if _, err = tx.Exec("INSERT INTO job_attachments(job_id,name,content) VALUES(?,?,?)", id, attachment.Name, attachment.Content); err != nil {
 			fail(w, 500, "could not save attachments")
@@ -159,7 +164,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	var archived bool
 	var attempts int
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	workspaceAccess := (r.Method == "GET" && (len(parts) == 1 || len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream"))) || (r.Method == "DELETE" && len(parts) == 1)
+	workspaceAccess := (r.Method == "GET" && (len(parts) == 1 || len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream" || parts[1] == "conversations"))) || (r.Method == "DELETE" && len(parts) == 1)
 	if workspaceAccess {
 		e = a.DB.QueryRow(`SELECT j.state,j.archived,j.attempt_count FROM jobs j WHERE j.id=? AND (j.user_id=? OR EXISTS(
 			SELECT 1 FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id
@@ -208,6 +213,10 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		if len(parts) == 2 && parts[1] == "conversations" && r.Method == "GET" {
+			a.jobConversations(w, id)
+			return
+		}
 		if archived {
 			fail(w, 409, "job is archived")
 			return
@@ -234,6 +243,20 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func appendJobEventTx(tx *sql.Tx, job int64, kind, content string) error {
+	if _, err := tx.Exec(`INSERT INTO job_conversations(job_id,title,status)
+		SELECT ?,'Main','active' WHERE NOT EXISTS(
+			SELECT 1 FROM job_conversations WHERE job_id=? AND parent_conversation_id IS NULL
+		)`, job, job); err != nil {
+		return err
+	}
+	var conversation int64
+	if err := tx.QueryRow("SELECT id FROM job_conversations WHERE job_id=? AND parent_conversation_id IS NULL", job).Scan(&conversation); err != nil {
+		return err
+	}
+	return appendConversationEventTx(tx, job, conversation, kind, content)
+}
+
+func appendConversationEventTx(tx *sql.Tx, job, conversation int64, kind, content string) error {
 	var run int64
 	err := tx.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", job).Scan(&run)
 	if err == sql.ErrNoRows {
@@ -250,11 +273,9 @@ func appendJobEventTx(tx *sql.Tx, job int64, kind, content string) error {
 	if err != nil {
 		return err
 	}
-	var seq int
-	if err = tx.QueryRow("SELECT COALESCE(MAX(sequence),0)+1 FROM job_events WHERE job_run_id=?", run).Scan(&seq); err != nil {
-		return err
-	}
-	_, err = tx.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,?,?,?)", run, seq, kind, content)
+	_, err = tx.Exec(`INSERT INTO job_events(job_run_id,sequence,kind,content,conversation_id)
+		SELECT ?,COALESCE(MAX(sequence),0)+1,?,?,? FROM job_events WHERE job_run_id=?`,
+		run, kind, content, conversation, run)
 	return err
 }
 
@@ -276,12 +297,16 @@ func statusContent(old, next string) string {
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
 	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
+	j.ConversationProgress = a.conversationProgressForJob(id)
 	var sessionID string
 	if err := a.DB.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session<>'job-history' ORDER BY id DESC LIMIT 1", id).Scan(&sessionID); err == nil {
 		sessionID = strings.TrimPrefix(sessionID, "hermes-api:")
 	}
 	var ev []map[string]any
-	rows, _ := a.DB.Query("SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at FROM job_events e JOIN job_runs r ON r.id=e.job_run_id WHERE r.job_id=? ORDER BY e.id", id)
+	rows, _ := a.DB.Query(`SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at
+		FROM job_events e JOIN job_runs r ON r.id=e.job_run_id
+		LEFT JOIN job_conversations c ON c.id=e.conversation_id
+		WHERE r.job_id=? AND (e.conversation_id IS NULL OR c.parent_conversation_id IS NULL) ORDER BY e.id`, id)
 	defer rows.Close()
 	for rows.Next() {
 		var i int

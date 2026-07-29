@@ -20,18 +20,19 @@ type App struct {
 }
 type ctxKey struct{}
 type Job struct {
-	ID       int64  `json:"id"`
-	LaneID   int64  `json:"lane_id"`
-	Task     string `json:"task"`
-	Done     string `json:"done_definition"`
-	Warning  string `json:"warning"`
-	State    string `json:"state"`
-	Position int    `json:"position"`
-	Attempts int    `json:"attempt_count"`
-	Created  string `json:"created_at"`
-	Updated  string `json:"updated_at"`
-	Creator  string `json:"creatorName"`
-	Archived bool   `json:"archived"`
+	ID                   int64                 `json:"id"`
+	LaneID               int64                 `json:"lane_id"`
+	Task                 string                `json:"task"`
+	Done                 string                `json:"done_definition"`
+	Warning              string                `json:"warning"`
+	State                string                `json:"state"`
+	Position             int                   `json:"position"`
+	Attempts             int                   `json:"attempt_count"`
+	Created              string                `json:"created_at"`
+	Updated              string                `json:"updated_at"`
+	Creator              string                `json:"creatorName"`
+	Archived             bool                  `json:"archived"`
+	ConversationProgress *ConversationProgress `json:"conversationProgress,omitempty"`
 }
 type Lane struct {
 	ID       int64  `json:"id"`
@@ -67,6 +68,7 @@ func (a *App) Handler() http.Handler {
 	m.Handle("/api/lanes", a.auth(http.HandlerFunc(a.lanes)))
 	m.Handle("/api/lanes/", a.auth(http.HandlerFunc(a.lanePath)))
 	m.Handle("/api/jobs/", a.auth(http.HandlerFunc(a.jobPath)))
+	m.Handle("/api/conversations/", a.auth(http.HandlerFunc(a.conversationPath)))
 	m.Handle("/api/notifications", a.auth(http.HandlerFunc(a.notifications)))
 	m.Handle("/api/notifications/", a.auth(http.HandlerFunc(a.notificationPath)))
 	m.Handle("/api/cli-tools", a.auth(http.HandlerFunc(a.tools)))

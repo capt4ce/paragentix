@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
-import { boardLocation, parseLocation, projectLocation } from "@/lib/routes";
+import { boardLocation, conversationLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { AsyncButton } from "@/components/AsyncButton";
 import { runWithToast, Toast, type ToastMessage } from "@/components/Toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { ConversationPage, JobConversationProgress } from "@/components/conversations/ConversationPage";
 import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
@@ -146,6 +147,7 @@ export function JobCard({
       <button type="button" className="job-open" onClick={open}>
         <b title={job.task}>{abbreviatedJobTask(job.task)}</b>
         <StatusBadge state={job.state} />
+        <JobConversationProgress progress={job.conversationProgress} compact />
       </button>
       <span className="job-creator">
         <button
@@ -299,6 +301,10 @@ function JobDetail({
           Archive job
         </AsyncButton>
       </div>}
+      <JobConversationProgress progress={j.conversationProgress} jobId={job.id} />
+      <a className="conversation-detail-link" href={conversationLocation(job.id)} target="_blank" rel="noopener noreferrer">
+        View conversation detail
+      </a>
       <h3>Timeline</h3>
       <div className="conversation">
         {j.events?.length ? (
@@ -649,6 +655,8 @@ export function App() {
         invitation={route.view === "invitation" ? route.token : undefined}
       />
     );
+  if (route.view === "conversation")
+    return <ConversationPage jobId={route.jobId} initialConversationId={route.conversationId} />;
   const openNotification = async (n: any) => {
     await api(`/notifications/${n.id}`, {
       method: "PATCH",

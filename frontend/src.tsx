@@ -8,5 +8,6 @@ export * from "./src/components/DialogShell";
 export * from "./src/components/NotificationCenter";
 export * from "./src/components/AsyncButton";
 export * from "./src/components/Toast";
+export * from "./src/components/conversations/ConversationPage";
 const root = document.getElementById("root");
 if (root) createRoot(root).render(<App />);

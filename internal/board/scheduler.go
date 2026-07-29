@@ -231,7 +231,8 @@ func (a *App) monitor(job, run int64, session string) {
 			if strings.HasPrefix(text, last) {
 				delta = strings.TrimPrefix(text, last)
 			}
-			a.DB.Exec("INSERT INTO job_events(job_run_id,sequence,kind,content) VALUES(?,?,?,?)", run, seq, "output", delta)
+			a.DB.Exec(`INSERT INTO job_events(job_run_id,sequence,kind,content,conversation_id)
+				SELECT ?,?,?,?,id FROM job_conversations WHERE job_id=? AND parent_conversation_id IS NULL`, run, seq, "output", delta, job)
 			last = text
 		}
 		if e != nil {

@@ -65,7 +65,93 @@ UPDATE workspaces SET hermes_url=COALESCE((SELECT hermes_url FROM user_settings 
 			_, e = a.DB.Exec(`INSERT OR IGNORE INTO workspace_members(workspace_id,user_id,role) SELECT id,user_id,'owner' FROM workspaces; INSERT OR IGNORE INTO projects(user_id,workspace_id,name,directory) SELECT user_id,id,'Default Project',root FROM workspaces WHERE root<>''; UPDATE columns SET project_id=(SELECT p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.id=columns.board_id ORDER BY p.id LIMIT 1) WHERE project_id IS NULL;`)
 		}
 	}
+	if e == nil {
+		e = a.migrateConversations()
+	}
 	return e
+}
+
+func (a *App) migrateConversations() error {
+	if _, err := a.DB.Exec(`CREATE TABLE IF NOT EXISTS job_conversations(
+	id INTEGER PRIMARY KEY,
+	job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,
+	parent_conversation_id INTEGER REFERENCES job_conversations ON DELETE CASCADE,
+	fork_event_id INTEGER REFERENCES job_events ON DELETE SET NULL,
+	title TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active' CHECK(status IN('active','waiting','ready_to_merge','merged')),
+	hermes_session_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS job_conversations_main ON job_conversations(job_id) WHERE parent_conversation_id IS NULL;
+CREATE INDEX IF NOT EXISTS job_conversations_parent ON job_conversations(parent_conversation_id);
+CREATE TABLE IF NOT EXISTS conversation_merges(
+	id INTEGER PRIMARY KEY,
+	source_conversation_id INTEGER NOT NULL REFERENCES job_conversations ON DELETE CASCADE,
+	target_conversation_id INTEGER NOT NULL REFERENCES job_conversations ON DELETE CASCADE,
+	approved_summary_json TEXT NOT NULL,
+	source_event_watermark INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	author_user_id INTEGER NOT NULL REFERENCES users,
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(source_conversation_id,idempotency_key)
+);`); err != nil {
+		return err
+	}
+	var sessionColumn int
+	if err := a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('job_conversations') WHERE name='hermes_session_id'`).Scan(&sessionColumn); err != nil {
+		return err
+	}
+	if sessionColumn == 0 {
+		if _, err := a.DB.Exec(`ALTER TABLE job_conversations ADD COLUMN hermes_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	var conversationColumn int
+	if err := a.DB.QueryRow(`SELECT count(*) FROM pragma_table_info('job_events') WHERE name='conversation_id'`).Scan(&conversationColumn); err != nil {
+		return err
+	}
+	if conversationColumn == 0 {
+		if _, err := a.DB.Exec(`ALTER TABLE job_events ADD COLUMN conversation_id INTEGER REFERENCES job_conversations ON DELETE CASCADE`); err != nil {
+			return err
+		}
+	}
+	_, err := a.DB.Exec(`INSERT INTO job_conversations(job_id,title,status)
+SELECT id,'Main','active' FROM jobs
+WHERE NOT EXISTS(SELECT 1 FROM job_conversations c WHERE c.job_id=jobs.id AND c.parent_conversation_id IS NULL);
+UPDATE job_events SET conversation_id=(
+	SELECT c.id FROM job_runs r JOIN job_conversations c ON c.job_id=r.job_id AND c.parent_conversation_id IS NULL
+	WHERE r.id=job_events.job_run_id
+) WHERE conversation_id IS NULL;
+UPDATE job_conversations SET status='waiting'
+WHERE parent_conversation_id IS NOT NULL AND status='active';
+CREATE INDEX IF NOT EXISTS job_events_conversation ON job_events(conversation_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS job_conversations_hermes_session ON job_conversations(hermes_session_id) WHERE hermes_session_id<>'';
+CREATE TRIGGER IF NOT EXISTS job_conversations_parent_job_insert
+BEFORE INSERT ON job_conversations WHEN NEW.parent_conversation_id IS NOT NULL
+	AND COALESCE((SELECT job_id FROM job_conversations WHERE id=NEW.parent_conversation_id),-1)<>NEW.job_id
+BEGIN SELECT RAISE(ABORT,'conversation parent must belong to the same job'); END;
+CREATE TRIGGER IF NOT EXISTS job_conversations_parent_job_update
+BEFORE UPDATE OF job_id,parent_conversation_id ON job_conversations WHEN NEW.parent_conversation_id IS NOT NULL
+	AND COALESCE((SELECT job_id FROM job_conversations WHERE id=NEW.parent_conversation_id),-1)<>NEW.job_id
+BEGIN SELECT RAISE(ABORT,'conversation parent must belong to the same job'); END;
+CREATE TRIGGER IF NOT EXISTS conversation_merges_direct_parent_insert
+BEFORE INSERT ON conversation_merges
+WHEN COALESCE((SELECT parent_conversation_id FROM job_conversations WHERE id=NEW.source_conversation_id),-1)<>NEW.target_conversation_id
+BEGIN SELECT RAISE(ABORT,'merge target must be the direct parent'); END;
+CREATE TRIGGER IF NOT EXISTS conversation_merges_direct_parent_update
+BEFORE UPDATE OF source_conversation_id,target_conversation_id ON conversation_merges
+WHEN COALESCE((SELECT parent_conversation_id FROM job_conversations WHERE id=NEW.source_conversation_id),-1)<>NEW.target_conversation_id
+BEGIN SELECT RAISE(ABORT,'merge target must be the direct parent'); END;
+CREATE TRIGGER IF NOT EXISTS conversation_merges_watermark_insert
+BEFORE INSERT ON conversation_merges
+WHEN EXISTS(SELECT 1 FROM conversation_merges WHERE source_conversation_id=NEW.source_conversation_id AND source_event_watermark=NEW.source_event_watermark)
+BEGIN SELECT RAISE(ABORT,'source watermark was already merged'); END;
+CREATE TRIGGER IF NOT EXISTS conversation_merges_watermark_update
+BEFORE UPDATE OF source_conversation_id,source_event_watermark ON conversation_merges
+WHEN EXISTS(SELECT 1 FROM conversation_merges WHERE source_conversation_id=NEW.source_conversation_id AND source_event_watermark=NEW.source_event_watermark AND id<>OLD.id)
+BEGIN SELECT RAISE(ABORT,'source watermark was already merged'); END;`)
+	return err
 }
 func (a *App) migrateInvitationNotifications() error {
 	var invitationColumn int

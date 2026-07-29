@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, DoneDefinitionField, eventSide, filterProjectJobs, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -67,6 +67,98 @@ describe("workspace URL restoration", () => {
   it("uses the canonical board history location for restoration", () => {
     expect(boardLocation(42)).toBe("?board=42");
     expect(parseLocation(boardLocation(42))).toEqual({ view: "board", boardId: 42 });
+  });
+});
+describe("conversation branching", () => {
+  const conversations = [
+    { id: 1, title: "Main", parentConversationId: null, status: "active" },
+    { id: 2, title: "SQLite option", parentConversationId: 1, status: "waiting" },
+    { id: 3, title: "Nested fallback", parentConversationId: 2, status: "ready_to_merge" },
+  ];
+  const progress = {
+    total: 5, resolved: 3, active: 1, waiting: 1, readyToMerge: 0, merged: 3,
+    actionable: [{ id: 2, title: "SQLite option", status: "waiting", breadcrumb: "Main / SQLite option" }],
+  };
+
+  it("restores the dedicated conversation route and builds its native new-tab URL", () => {
+    expect(conversationLocation(42, 7)).toBe("?job=42&conversation=7");
+    expect(parseLocation("?job=42&conversation=7")).toEqual({ view: "conversation", jobId: 42, conversationId: 7 });
+    expect(parseLocation("?job=42")).toEqual({ view: "conversation", jobId: 42 });
+  });
+
+  it("never combines a job header with a conversation belonging to another job", () => {
+    expect(initialConversationSelection(99, conversations)).toBe(1);
+    expect(initialConversationSelection(3, conversations)).toBe(3);
+    expect(conversationEventsBelongTo(2, 3)).toBe(false);
+    expect(conversationEventsBelongTo(3, 3)).toBe(true);
+  });
+
+  it("applies the established attachment limits to conversation replies", () => {
+    const oversized = new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.bin");
+    expect(() => conversationReplyRequest("", [oversized])).toThrow("20 MB");
+    const files = Array.from({ length: 21 }, (_, index) => new File(["x"], `${index}.txt`));
+    expect(() => conversationReplyRequest("", files)).toThrow("At most 20");
+    expect(conversationReplyRequest("plain", [])).toEqual({
+      method: "POST",
+      body: JSON.stringify({ comment: "plain" }),
+    });
+  });
+
+  it("renders Alternative B segmented progress with accessible aggregate text", () => {
+    const html = renderToStaticMarkup(createElement(JobConversationProgress, { progress, compact: true }));
+    expect(html).toContain("3/5 resolved");
+    expect(html).toContain("1 active, 1 waiting, 0 ready to merge, 3 merged");
+    expect((html.match(/conversation-progress-segment/g) || []).length).toBe(5);
+  });
+
+  it("shows at most three actionable rows in expanded progress", () => {
+    const many = { ...progress, actionable: Array.from({ length: 5 }, (_, id) => ({ id, title: `Fork ${id}`, status: "waiting", breadcrumb: `Main / Fork ${id}` })) };
+    const { getAllByRole, getByText } = render(createElement(JobConversationProgress, { progress: many, jobId: 42 }));
+    expect(getAllByRole("link", { name: /Fork/ })).toHaveLength(3);
+    expect(getByText("View all 5 conversations")).toBeTruthy();
+  });
+
+  it("nests and collapses the conversation tree", () => {
+    const screen = render(createElement(ConversationBranchTree, { conversations, activeId: 3, onSelect: vi.fn() }));
+    expect(screen.getByRole("button", { name: "Nested fallback" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse SQLite option" }));
+    expect(screen.queryByRole("button", { name: "Nested fallback" })).toBeNull();
+  });
+
+  it("creates trimmed sibling replies in one dialog submission and supports plus/remove", async () => {
+    const create = vi.fn(async () => {});
+    const screen = render(createElement(CreateBranchesDialog, { open: true, onOpenChange: vi.fn(), onCreate: create }));
+    fireEvent.change(screen.getByLabelText("Opening reply 1"), { target: { value: " first " } });
+    fireEvent.click(screen.getByRole("button", { name: "Add another branch" }));
+    fireEvent.change(screen.getByLabelText("Opening reply 2"), { target: { value: "second" } });
+    expect(screen.getByRole("button", { name: "Remove branch 2" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create branches" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(["first", "second"]));
+  });
+
+  it("offers fork from each bubble and passes that event as the fork point", () => {
+    const fork = vi.fn();
+    const screen = render(createElement(ConversationBubble, { event: { id: 9, kind: "reply", content: "Answer" }, onFork: fork }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(screen.getByText("Fork conversation"));
+    expect(fork).toHaveBeenCalledWith(9);
+  });
+
+  it("supports editable important points in merge review", async () => {
+    const confirm = vi.fn(async () => {});
+    const screen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), points: ["First", "Second"], onConfirm: confirm }));
+    fireEvent.change(screen.getByLabelText("Important point 1"), { target: { value: "Edited" } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove important point 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(["Edited"]));
+  });
+
+  it("keeps the inspector timeline and adds the new-tab link above it", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app).toMatch(/target="_blank"\s+rel="noopener noreferrer"/);
+    expect(app.indexOf("View conversation detail")).toBeLessThan(app.indexOf("<h3>Timeline</h3>"));
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/@media\(max-width:700px\)[\s\S]*conversation-tree-sheet/);
   });
 });
 describe("project navigation and jobs", () => {
