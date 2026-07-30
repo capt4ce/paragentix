@@ -434,9 +434,11 @@ func (id *hermesMessageID) UnmarshalJSON(data []byte) error {
 }
 
 type hermesMessage struct {
-	ID      hermesMessageID `json:"id"`
-	Role    string          `json:"role"`
-	Content any             `json:"content"`
+	ID        hermesMessageID `json:"id"`
+	Role      string          `json:"role"`
+	Content   any             `json:"content"`
+	Reasoning string          `json:"reasoning"`
+	ToolCalls json.RawMessage `json:"tool_calls"`
 }
 type normalizedHermesMessage struct {
 	SourceKey string
@@ -463,6 +465,10 @@ func normalizeHermesAssistantMessages(messages []hermesMessage) []normalizedHerm
 			continue
 		}
 		content = strings.TrimSpace(content)
+		if content == "" && len(message.ToolCalls) > 0 {
+			content = strings.Trim(strings.TrimSpace(message.Reasoning), "*")
+			content = strings.TrimSpace(content)
+		}
 		if content == "" {
 			continue
 		}

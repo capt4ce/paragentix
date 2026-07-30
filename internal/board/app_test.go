@@ -80,6 +80,16 @@ func TestNormalizeHermesMessages(t *testing.T) {
 			wantFinal:        "Finished safely",
 		},
 		{
+			name: "reasoning attached to tool calls is retained without tool payloads",
+			messages: []hermesMessage{
+				{ID: "progress-1", Role: "assistant", Content: "", Reasoning: "**Inspecting project state**", ToolCalls: json.RawMessage(`[{"function":{"name":"terminal","arguments":"{\\"command\\":\\"secret\\"}"}}]`)},
+				{Role: "tool", Content: `{"secret":"tool result"}`},
+				{ID: "final-1", Role: "assistant", Content: "Finished safely"},
+			},
+			wantIntermediate: []string{"Inspecting project state"},
+			wantFinal:        "Finished safely",
+		},
+		{
 			name: "unsafe and empty rows are skipped",
 			messages: []hermesMessage{
 				{Role: "assistant", Content: map[string]any{"tool_calls": []any{"raw arguments"}}},
