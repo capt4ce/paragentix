@@ -10,6 +10,15 @@ import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe("job board synchronization", () => {
+  it("offers moving only todo jobs", () => {
+    const move = vi.fn(async () => {});
+    const todo = render(createElement(JobCard, { job: { id: 1, task: "queued", state: "todo", creatorName: "a" }, open: vi.fn(), archive: vi.fn(), move }));
+    fireEvent.click(todo.getByRole("button", { name: "Move queued" }));
+    expect(move).toHaveBeenCalledOnce();
+    todo.unmount();
+    const active = render(createElement(JobCard, { job: { id: 2, task: "active", state: "in_progress", creatorName: "a" }, open: vi.fn(), archive: vi.fn(), move }));
+    expect(active.queryByRole("button", { name: "Move active" })).toBeNull();
+  });
   it("refreshes the selected job and board columns after a job mutation", async () => {
     const setJob = vi.fn();
     const setCols = vi.fn();

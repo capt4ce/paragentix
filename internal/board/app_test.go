@@ -316,6 +316,39 @@ func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 	}
 }
 
+func TestMoveTodoJobToEndOfSameProjectColumn(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"move-job@example.com","password":"password1"}`)
+	var boardID, projectID int64
+	a.DB.QueryRow(`SELECT b.id,p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=(SELECT id FROM users WHERE email=?)`, "move-job@example.com").Scan(&boardID, &projectID)
+	columns, lanes := make([]int64, 2), make([]int64, 2)
+	for i, name := range []string{"Parallel", "Sync"} {
+		w, _ := req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"`+name+`","projectId":`+itoa(projectID)+`}`)
+		var out map[string]any
+		json.Unmarshal(w.Body.Bytes(), &out)
+		columns[i] = int64(out["id"].(float64))
+		a.DB.QueryRow("SELECT lane_id FROM columns WHERE id=?", columns[i]).Scan(&lanes[i])
+	}
+	a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES((SELECT id FROM users WHERE email=?),?,'existing','done',4)", "move-job@example.com", lanes[1])
+	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES((SELECT id FROM users WHERE email=?),?,'move me','todo',0)", "move-job@example.com", lanes[0])
+	jobID, _ := res.LastInsertId()
+	w, _ := req(t, h, cookie, "POST", "/api/jobs/"+itoa(jobID)+"/move", `{"columnId":`+itoa(columns[1])+`}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("move: %d %s", w.Code, w.Body.String())
+	}
+	var laneID int64
+	var position int
+	a.DB.QueryRow("SELECT lane_id,position FROM jobs WHERE id=?", jobID).Scan(&laneID, &position)
+	if laneID != lanes[1] || position != 5 {
+		t.Fatalf("moved lane=%d position=%d", laneID, position)
+	}
+}
+
 func TestReorderColumnsPersistsBoardOrder(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {

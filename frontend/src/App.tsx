@@ -14,7 +14,7 @@ import { runWithToast, Toast, type ToastMessage } from "@/components/Toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ConversationPage, CreateBranchesDialog, JobConversationProgress } from "@/components/conversations/ConversationPage";
-import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
+import { Archive, Copy, MoveRight, Paperclip, Pencil, Plus, Send } from "lucide-react";
 import { submitFormShortcut } from "@/lib/forms";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
@@ -252,10 +252,12 @@ export function JobCard({
   job,
   open,
   archive,
+  move,
 }: {
   job: any;
   open: () => void;
   archive: () => Promise<void>;
+  move?: () => void;
 }) {
   const creatorTooltipId = useId();
   const identity = job.title || job.task;
@@ -284,6 +286,7 @@ export function JobCard({
           {job.creatorName}
         </span>
       </span>
+      {job.state === "todo" && move && <button type="button" className="job-move" aria-label={`Move ${identity}`} title="Move to another column" onClick={(e) => { e.stopPropagation(); move(); }}><MoveRight size={16} /></button>}
       <AsyncButton
         type="button"
         className="job-archive danger"
@@ -799,6 +802,8 @@ export function App() {
         await api(form.chooseColumn ? `/boards/${board.id}/jobs` : `/columns/${form.columnId}/jobs`, {
           ...jobCreationRequest(form.chooseColumn ? { ...form, columnId: form.newColumn ? undefined : form.columnId, projectId: form.newColumn ? form.projectId : undefined } : form),
         });
+      if (dialog === "move job")
+        await api(`/jobs/${form.jobId}/move`, { method: "POST", body: JSON.stringify({ columnId: Number(form.columnId) }) });
       if (dialog === "edit column")
         await api(`/columns/${form.id}`, {
           method: "PATCH",
@@ -1362,6 +1367,11 @@ export function App() {
                         await load();
                       }, setToast, `Job ${j.id} archived`, `Failed to archive job ${j.id}`);
                     }}
+                    move={() => {
+                      const targets = cols.filter((target) => target.id !== c.id && target.projectId === c.projectId);
+                      setForm({ jobId: j.id, identity: j.title || j.task, columnId: targets[0]?.id, targets });
+                      setDialog("move job");
+                    }}
                   />
                 ))}
                 <button
@@ -1387,6 +1397,14 @@ export function App() {
             <>
               <p>Remove {form.email} from this workspace?</p>
               <AsyncButton type="button" onClick={submit}>Confirm removal</AsyncButton>
+            </>
+          ) : dialog === "move job" ? (
+            <>
+              <p>Move <b>{form.identity}</b> to the end of:</p>
+              {form.targets?.length ? <label>Column<select required value={form.columnId || ""} onChange={(e) => setForm({ ...form, columnId: e.target.value })}>
+                {form.targets.map((column: any) => <option key={column.id} value={column.id}>{column.name}</option>)}
+              </select></label> : <p>No other columns use this project.</p>}
+              <AsyncButton type="button" disabled={!form.columnId} onClick={submit}>Move job</AsyncButton>
             </>
           ) : (
             <>

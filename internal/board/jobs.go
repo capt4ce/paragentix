@@ -331,6 +331,9 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 		case "reorder":
 			a.reorder(w, r, id, state)
 			return
+		case "move":
+			a.moveJob(w, r, id, state)
+			return
 		case "events":
 			a.events(w, id)
 			return
@@ -448,6 +451,60 @@ func (a *App) editJob(w http.ResponseWriter, r *http.Request, id int64, state st
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
+func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state string) {
+	if r.Method != http.MethodPost {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	if state != "todo" {
+		fail(w, 409, "only todo jobs can move")
+		return
+	}
+	var x struct {
+		ColumnID int64 `json:"columnId"`
+	}
+	if decode(r, &x) != nil || x.ColumnID == 0 {
+		fail(w, 400, "columnId required")
+		return
+	}
+	var targetLane int64
+	if err := a.DB.QueryRow(`SELECT target.lane_id FROM jobs j JOIN columns source ON source.lane_id=j.lane_id JOIN columns target ON target.id=? AND target.project_id=source.project_id AND target.board_id=source.board_id AND target.archived=0 WHERE j.id=? AND j.user_id=?`, x.ColumnID, id, uid(r)).Scan(&targetLane); err != nil {
+		fail(w, 409, "target column must be on the same board and project")
+		return
+	}
+	tx, err := a.DB.Begin()
+	if err != nil {
+		fail(w, 500, "could not move job")
+		return
+	}
+	defer tx.Rollback()
+	var position int
+	if err = tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=? AND archived=0", targetLane).Scan(&position); err == nil {
+		var sourceName, targetName string
+		err = tx.QueryRow(`SELECT source.name,target.name FROM jobs j JOIN columns source ON source.lane_id=j.lane_id JOIN columns target ON target.id=? WHERE j.id=?`, x.ColumnID, id).Scan(&sourceName, &targetName)
+		if err == nil {
+			var result sql.Result
+			result, err = tx.Exec("UPDATE jobs SET lane_id=?,position=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", targetLane, position, id)
+			if changed, _ := result.RowsAffected(); err == nil && changed != 1 {
+				err = fmt.Errorf("job state changed")
+			}
+			if err == nil {
+				err = appendJobEventTx(tx, id, "move", fmt.Sprintf("Moved from %s to %s", sourceName, targetName))
+			}
+		}
+	}
+	if err != nil {
+		fail(w, 409, "could not move job")
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		fail(w, 500, "could not move job")
+		return
+	}
+	jsonOut(w, 200, map[string]bool{"ok": true})
+	a.signal()
+}
+
 func (a *App) reorder(w http.ResponseWriter, r *http.Request, id int64, state string) {
 	if state != "todo" {
 		fail(w, 409, "only todo jobs can reorder")
