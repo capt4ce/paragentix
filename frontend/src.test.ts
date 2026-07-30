@@ -21,6 +21,8 @@ describe("form submit shortcut", () => {
     const screen = render(createElement("form", { onSubmit: submit, onKeyDown: submitFormShortcut }, createElement("textarea", { "aria-label": "Task" })));
     fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter" });
     fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter", ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter", metaKey: true, altKey: true });
     expect(submit).not.toHaveBeenCalled();
   });
 });

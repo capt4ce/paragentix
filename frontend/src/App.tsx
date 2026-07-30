@@ -424,7 +424,22 @@ function JobDetail({
       <h3>Timeline</h3>
       <JobTimeline events={j.events} state={j.state} />
       {canComment(j.state) && (
-        <div className="commentbox">
+        <form className="commentbox" onKeyDown={submitFormShortcut} onSubmit={async (event) => {
+          event.preventDefault();
+          if (sending || (!comment.trim() && !commentFiles.length)) return;
+          setSending(true);
+          setCommentError("");
+          try {
+            await api(`/jobs/${job.id}/comment`, replyRequest(comment, commentFiles));
+            setComment("");
+            setCommentFiles([]);
+            setD(jobDetail(await api("/jobs/" + job.id)));
+          } catch (e) {
+            setCommentError(String(e));
+          } finally {
+            setSending(false);
+          }
+        }}>
           <div className="commentbox-row">
             <button
               type="button"
@@ -454,33 +469,19 @@ function JobDetail({
               onChange={(e) => setComment(e.target.value)}
             />
             <button
-              type="button"
+              type="submit"
               className={buttonVariants({ size: "icon" })}
               aria-label={sending ? "Sending reply" : "Send reply"}
               title="Send reply"
               aria-busy={sending || undefined}
               disabled={sending || (!comment.trim() && !commentFiles.length)}
-              onClick={async () => {
-                setSending(true);
-                setCommentError("");
-                try {
-                  await api(`/jobs/${job.id}/comment`, replyRequest(comment, commentFiles));
-                  setComment("");
-                  setCommentFiles([]);
-                  setD(jobDetail(await api("/jobs/" + job.id)));
-                } catch (e) {
-                  setCommentError(String(e));
-                } finally {
-                  setSending(false);
-                }
-              }}
             >
               <Send />
             </button>
           </div>
           {commentFiles.length > 0 && <small>{commentFiles.length} file{commentFiles.length === 1 ? "" : "s"} attached</small>}
           {commentError && <p role="alert">{commentError}</p>}
-        </div>
+        </form>
       )}
       {j.state === "blocked" && (
         <div className="actions">

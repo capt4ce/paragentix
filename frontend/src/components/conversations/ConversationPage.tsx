@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, base } from "@/lib/api";
+import { submitFormShortcut } from "@/lib/forms";
 import { conversationLocation } from "@/lib/routes";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -400,7 +401,14 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
             {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId })} readOnly={readOnly} />)}
             {!events.length && <p>No conversation yet</p>}
           </div>
-          {!readOnly && mainCanReply && <div className="conversation-composer">
+          {!readOnly && mainCanReply && <form className="conversation-composer" onKeyDown={submitFormShortcut} onSubmit={async (event) => {
+            event.preventDefault();
+            if (!reply.trim() && !files.length) return;
+            try {
+              await api(`/conversations/${activeId}/comment`, conversationReplyRequest(reply, files));
+              setReply(""); setFiles([]); await loadEvents();
+            } catch (failure) { setError(String(failure)); }
+          }}>
             <label className="sr-only" htmlFor="conversation-reply">Reply</label>
             <input id="conversation-files" type="file" multiple hidden onChange={(event) => {
               const selected = Array.from(event.target.files ?? []);
@@ -415,13 +423,8 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
             }} />
             <Button type="button" variant="outline" size="icon" aria-label="Add files" onClick={() => document.getElementById("conversation-files")?.click()}><Paperclip /></Button>
             <textarea id="conversation-reply" maxLength={4000} placeholder="Reply to conversation" value={reply} onChange={(event) => setReply(event.target.value)} />
-            <Button type="button" size="icon" aria-label="Send reply" disabled={!reply.trim() && !files.length} onClick={async () => {
-              try {
-                await api(`/conversations/${activeId}/comment`, conversationReplyRequest(reply, files));
-                setReply(""); setFiles([]); await loadEvents();
-              } catch (failure) { setError(String(failure)); }
-            }}><Send /></Button>
-          </div>}
+            <Button type="submit" size="icon" aria-label="Send reply" disabled={!reply.trim() && !files.length}><Send /></Button>
+          </form>}
           {files.length > 0 && <small>{files.length} file{files.length === 1 ? "" : "s"} attached</small>}
           {!readOnly && <button type="button" className="conversation-fork-link" disabled={!newestEvent} onClick={() => setForkPoint({ conversationId: activeId, eventId: newestEvent })}>Fork conversation</button>}
         </section>
