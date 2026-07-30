@@ -4,12 +4,27 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, jobLocation, openConversationInNewTab, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe("job board synchronization", () => {
+  it("uses and restores the canonical job detail path", () => {
+    expect(jobLocation(42)).toBe("/jobs/42");
+    expect(parseLocation("", "/jobs/42")).toEqual({ view: "job", jobId: 42 });
+    expect(parseLocation("", "/jobs/nope")).toEqual({ view: "board" });
+  });
+
+  it("renders safe links in job detail text", () => {
+    const { getAllByRole, container } = render(createElement(DoneDefinitionField, {
+      job: { state: "done", done_definition: "Review [result](https://example.test/result)" },
+      value: "",
+      onChange: vi.fn(),
+    }));
+    expect(getAllByRole("link")[0].getAttribute("href")).toBe("https://example.test/result");
+    expect(container.textContent).toContain("Review result");
+  });
   it("refreshes the selected job and board columns after a job mutation", async () => {
     const setJob = vi.fn();
     const setCols = vi.fn();
@@ -178,6 +193,36 @@ describe("conversation branching", () => {
     expect(fork).toHaveBeenCalledWith(9);
   });
 
+  it("opens a created footer fork in a safe new tab without changing the originating conversation", () => {
+    history.replaceState({}, "", conversationLocation(42, 3));
+    const openedWindow = { opener: window };
+    const openWindow = vi.fn(() => openedWindow);
+
+    expect(openConversationInNewTab(42, 7, openWindow)).toBeUndefined();
+
+    expect(openWindow).toHaveBeenCalledWith("?job=42&conversation=7", "_blank", "noopener,noreferrer");
+    expect(openedWindow.opener).toBeNull();
+    expect(location.search).toBe("?job=42&conversation=3");
+  });
+
+  it("returns a normal created-fork URL when the new tab is blocked", () => {
+    const openWindow = vi.fn(() => null);
+
+    expect(openConversationInNewTab(42, 7, openWindow)).toBe("?job=42&conversation=7");
+  });
+
+  it("contains the laptop layout and groups the fork link directly below the composer", () => {
+    const source = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
+    expect(source).toMatch(/className="conversation-footer"[\s\S]*className="conversation-composer"[\s\S]*className="conversation-fork-link"/);
+    expect(source).toContain("Open created fork conversation");
+
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.conversation-page\{[^}]*grid-template-rows:auto minmax\(0,1fr\)[^}]*overflow:hidden/);
+    expect(css).toMatch(/\.conversation-workspace\{[^}]*min-height:0[^}]*overflow:hidden/);
+    expect(css).toMatch(/\.conversation-focus\{[^}]*grid-template-rows:minmax\(0,1fr\) auto[^}]*min-height:0[^}]*overflow:hidden/);
+    expect(css).toMatch(/\.conversation-footer\{[^}]*display:grid/);
+  });
+
   it("supports editable important points in merge review", async () => {
     const confirm = vi.fn(async () => {});
     const screen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), points: ["First", "Second"], onConfirm: confirm }));
@@ -193,6 +238,85 @@ describe("conversation branching", () => {
     expect(app.indexOf("View conversation detail")).toBeLessThan(app.indexOf("<h3>Timeline</h3>"));
     const css = readFileSync("src/index.css", "utf8");
     expect(css).toMatch(/@media\(max-width:700px\)[\s\S]*conversation-tree-sheet/);
+  });
+});
+describe("approved job-detail UI consistency", () => {
+  const conversations = [
+    { id: 1, title: "Main", parentConversationId: null, status: "active" },
+    { id: 2, title: "SQLite option", parentConversationId: 1, status: "waiting" },
+  ];
+
+  it("gives shared dialogs distinct header, body, error, and footer regions", () => {
+    const screen = render(createElement(DialogShell, {
+      title: "Shared dialog",
+      description: "A consistent dialog",
+      close: vi.fn(),
+      error: "Something failed",
+      footer: createElement("button", null, "Continue"),
+    }, "Dialog body"));
+
+    expect(screen.getByText("Shared dialog").closest(".dialog-shell-header")).toBeTruthy();
+    expect(screen.getByText("Dialog body").closest(".dialog-shell-body")).toBeTruthy();
+    expect(screen.getByRole("alert").classList.contains("dialog-shell-error")).toBe(true);
+    expect(screen.getByRole("button", { name: "Continue" }).closest(".dialog-shell-footer")).toBeTruthy();
+  });
+
+  it("uses shared dialog chrome with Cancel and a visible pending state for both reviews", async () => {
+    let finishCreate!: () => void;
+    const create = vi.fn(() => new Promise<void>((resolve) => { finishCreate = resolve; }));
+    const createScreen = render(createElement(CreateBranchesDialog, { open: true, onOpenChange: vi.fn(), onCreate: create }));
+    expect(createScreen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    fireEvent.change(createScreen.getByLabelText("Opening reply 1"), { target: { value: "First" } });
+    fireEvent.click(createScreen.getByRole("button", { name: "Create branches" }));
+    expect(createScreen.getByRole("button", { name: "Creating branches" }).getAttribute("aria-busy")).toBe("true");
+    finishCreate();
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    createScreen.unmount();
+
+    let finishMerge!: () => void;
+    const confirm = vi.fn(() => new Promise<void>((resolve) => { finishMerge = resolve; }));
+    const mergeScreen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), points: ["Keep this"], onConfirm: confirm }));
+    expect(mergeScreen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    fireEvent.click(mergeScreen.getByRole("button", { name: "Confirm merge" }));
+    expect(mergeScreen.getByRole("button", { name: "Merging" }).getAttribute("aria-busy")).toBe("true");
+    finishMerge();
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+  });
+
+  it("shows active context in the mobile drawer and closes after branch selection", () => {
+    const close = vi.fn();
+    const select = vi.fn();
+    const screen = render(createElement(MobileConversationDrawer, {
+      open: true,
+      conversations,
+      activeId: 2,
+      onClose: close,
+      onSelect: select,
+    }));
+
+    expect(screen.getByRole("dialog").classList.contains("conversation-tree-sheet")).toBe(true);
+    expect(screen.getByText("Active conversation")).toBeTruthy();
+    expect(screen.getAllByText("SQLite option")).toHaveLength(2);
+    expect(screen.getByText("waiting", { selector: ".conversation-drawer-status" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Main" }));
+    expect(select).toHaveBeenCalledWith(1);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("groups job-detail content and uses a bounded safe-area conversation layout", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    const css = readFileSync("src/index.css", "utf8");
+    for (const group of ["job-inspector-overview", "job-inspector-work", "job-inspector-conversations", "job-inspector-activity"]) {
+      expect(app).toContain(`className="${group}"`);
+    }
+    expect(app.indexOf('className="job-inspector-overview"')).toBeLessThan(app.indexOf('className="job-inspector-work"'));
+    expect(app.indexOf('className="job-inspector-work"')).toBeLessThan(app.indexOf('className="job-inspector-conversations"'));
+    expect(app.indexOf('className="job-inspector-conversations"')).toBeLessThan(app.indexOf('className="job-inspector-activity"'));
+    expect(css).not.toMatch(/\.conversation-focus\{[^}]*height:calc/);
+    expect(css).toMatch(/\.conversation-workspace\{[^}]*min-height:0/);
+    expect(css).toMatch(/\.conversation-focus\{[^}]*min-height:0/);
+    expect(css).toMatch(/\.conversation-composer\{[^}]*env\(safe-area-inset-bottom\)/);
+    expect(css).toMatch(/\.conversation-tree-sheet\{[^}]*right:0[^}]*height:100dvh/);
   });
 });
 describe("project navigation and jobs", () => {
@@ -533,24 +657,17 @@ describe("job detail session", () => {
   });
 });
 describe("job detail history", () => {
-  it("closes an open job detail on Back without leaving the underlying page", async () => {
-    history.replaceState({}, "", "?board=42");
-    const pushState = vi.spyOn(history, "pushState");
+  it("closes an open job detail on Back", async () => {
     const Harness = () => {
       const [open, setOpen] = useState(true);
       useJobDetailHistory(open, () => setOpen(false));
       return open ? createElement("div", { role: "dialog" }, "Job detail") : null;
     };
-    const { queryByText, unmount } = render(createElement(Harness));
+    const { queryByText } = render(createElement(Harness));
 
-    expect(pushState).toHaveBeenCalledWith({}, "", location.href);
-    expect(location.search).toBe("?board=42");
     dispatchEvent(new PopStateEvent("popstate"));
 
     await waitFor(() => expect(queryByText("Job detail")).toBeNull());
-    expect(location.search).toBe("?board=42");
-    unmount();
-    pushState.mockRestore();
   });
 });
 describe("job actions", () => {

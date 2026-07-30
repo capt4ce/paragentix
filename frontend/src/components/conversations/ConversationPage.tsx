@@ -2,11 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, base } from "@/lib/api";
 import { submitFormShortcut } from "@/lib/forms";
 import { conversationLocation } from "@/lib/routes";
+import { DialogShell } from "@/components/DialogShell";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -42,6 +40,18 @@ export function initialConversationSelection(requestedId: number | undefined, co
 
 export const conversationEventsBelongTo = (requestedConversationId: number, activeConversationId: number) =>
   requestedConversationId === activeConversationId;
+
+export function openConversationInNewTab(
+  jobId: number,
+  conversationId: number,
+  openWindow: (url: string, target: string, features: string) => { opener: Window | null } | null =
+    (url, target, features) => window.open(url, target, features),
+) {
+  const url = conversationLocation(jobId, conversationId);
+  const opened = openWindow(url, "_blank", "noopener,noreferrer");
+  if (!opened) return url;
+  opened.opener = null;
+}
 
 export function conversationReplyRequest(comment: string, files: File[]): RequestInit {
   if (files.length > MAX_CONVERSATION_ATTACHMENTS) throw Error(`At most ${MAX_CONVERSATION_ATTACHMENTS} files may be attached`);
@@ -154,6 +164,46 @@ export function ConversationBranchTree({ conversations, activeId, onSelect }: Tr
   return <nav className="conversation-tree" aria-label="Conversations"><ul>{(children.get(null) ?? []).map(branch)}</ul></nav>;
 }
 
+export function MobileConversationDrawer({
+  open,
+  conversations,
+  activeId,
+  onClose,
+  onSelect,
+}: {
+  open: boolean;
+  conversations: ConversationRecord[];
+  activeId: number;
+  onClose: () => void;
+  onSelect: (id: number) => void;
+}) {
+  const active = conversations.find((conversation) => conversation.id === activeId);
+  return (
+    <DialogShell
+      open={open}
+      close={onClose}
+      title="Conversations"
+      className="conversation-tree-sheet"
+      description={active && (
+        <span className="conversation-drawer-context">
+          <span>Active conversation</span>
+          <b>{active.title}</b>
+          <span className="conversation-drawer-status">{statusText(active.status)}</span>
+        </span>
+      )}
+    >
+      <ConversationBranchTree
+        conversations={conversations}
+        activeId={activeId}
+        onSelect={(id) => {
+          onSelect(id);
+          onClose();
+        }}
+      />
+    </DialogShell>
+  );
+}
+
 export function CreateBranchesDialog({
   open,
   onOpenChange,
@@ -172,57 +222,60 @@ export function CreateBranchesDialog({
       setError("");
     }
   }, [open]);
+  const create = async () => {
+    const trimmed = replies.map((reply) => reply.trim());
+    if (trimmed.some((reply) => !reply)) {
+      setError("Every branch needs an opening reply.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onCreate(trimmed);
+      onOpenChange(false);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create conversation branches</DialogTitle>
-          <DialogDescription>Each opening reply creates a sibling branch from the same point.</DialogDescription>
-        </DialogHeader>
-        <div className="branch-replies">
-          {replies.map((reply, index) => (
-            <div key={index} className="branch-reply">
-              <label>Opening reply {index + 1}
-                <textarea
-                  aria-label={`Opening reply ${index + 1}`}
-                  maxLength={4000}
-                  value={reply}
-                  onChange={(event) => setReplies(replies.map((value, i) => i === index ? event.target.value : value))}
-                />
-              </label>
-              {replies.length > 1 && (
-                <Button type="button" variant="outline" size="icon" aria-label={`Remove branch ${index + 1}`} onClick={() => setReplies(replies.filter((_, i) => i !== index))}>
-                  <Minus />
-                </Button>
-              )}
-            </div>
-          ))}
-          <Button type="button" variant="outline" aria-label="Add another branch" disabled={replies.length >= 10} onClick={() => setReplies([...replies, ""])}>
-            <Plus /> Add another branch
-          </Button>
-        </div>
-        {error && <p role="alert">{error}</p>}
-        <DialogFooter>
-          <Button type="button" disabled={saving} onClick={async () => {
-            const trimmed = replies.map((reply) => reply.trim());
-            if (trimmed.some((reply) => !reply)) {
-              setError("Every branch needs an opening reply.");
-              return;
-            }
-            setSaving(true);
-            setError("");
-            try {
-              await onCreate(trimmed);
-              onOpenChange(false);
-            } catch (failure) {
-              setError(failure instanceof Error ? failure.message : String(failure));
-            } finally {
-              setSaving(false);
-            }
-          }}>Create branches</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <DialogShell
+      open={open}
+      close={() => onOpenChange(false)}
+      title="Create conversation branches"
+      description="Each opening reply creates a sibling branch from the same point."
+      error={error}
+      footer={<>
+        <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button type="button" disabled={saving} aria-busy={saving || undefined} aria-label={saving ? "Creating branches" : undefined} onClick={create}>
+          {saving ? "Creating…" : "Create branches"}
+        </Button>
+      </>}
+    >
+      <div className="branch-replies">
+        {replies.map((reply, index) => (
+          <div key={index} className="branch-reply">
+            <label>Opening reply {index + 1}
+              <textarea
+                aria-label={`Opening reply ${index + 1}`}
+                maxLength={4000}
+                value={reply}
+                onChange={(event) => setReplies(replies.map((value, i) => i === index ? event.target.value : value))}
+              />
+            </label>
+            {replies.length > 1 && (
+              <Button type="button" variant="outline" size="icon" aria-label={`Remove branch ${index + 1}`} onClick={() => setReplies(replies.filter((_, i) => i !== index))}>
+                <Minus />
+              </Button>
+            )}
+          </div>
+        ))}
+        <Button type="button" variant="outline" aria-label="Add another branch" disabled={replies.length >= 10 || saving} onClick={() => setReplies([...replies, ""])}>
+          <Plus /> Add another branch
+        </Button>
+      </div>
+    </DialogShell>
   );
 }
 
@@ -239,6 +292,7 @@ export function MergeReviewDialog({
 }) {
   const [edited, setEdited] = useState(points);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   useEffect(() => { if (open) { setEdited(points.length ? points : [""]); setError(""); } }, [open, points]);
   const move = (index: number, offset: number) => {
     const next = [...edited];
@@ -246,46 +300,53 @@ export function MergeReviewDialog({
     next.splice(index + offset, 0, point);
     setEdited(next);
   };
+  const merge = async () => {
+    const approved = edited.map((point) => point.trim()).filter(Boolean);
+    if (!approved.length) {
+      setError("Keep at least one important point.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onConfirm(approved);
+      onOpenChange(false);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Merge back to parent</DialogTitle>
-          <DialogDescription>Review the important points that will be appended to the direct parent.</DialogDescription>
-        </DialogHeader>
-        <div className="merge-points">
-          {edited.map((point, index) => (
-            <div key={index} className="merge-point">
-              <label>Important point {index + 1}
-                <textarea aria-label={`Important point ${index + 1}`} maxLength={1000} value={point} onChange={(event) => setEdited(edited.map((value, i) => i === index ? event.target.value : value))} />
-              </label>
-              <span>
-                <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} up`} disabled={index === 0} onClick={() => move(index, -1)}><ChevronUp /></Button>
-                <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} down`} disabled={index === edited.length - 1} onClick={() => move(index, 1)}><ChevronDown /></Button>
-                <Button type="button" variant="outline" size="icon" aria-label={`Remove important point ${index + 1}`} onClick={() => setEdited(edited.filter((_, i) => i !== index))}><Minus /></Button>
-              </span>
-            </div>
-          ))}
-          <Button type="button" variant="outline" onClick={() => setEdited([...edited, ""])}><Plus /> Add point</Button>
-        </div>
-        {error && <p role="alert">{error}</p>}
-        <DialogFooter>
-          <Button type="button" onClick={async () => {
-            const approved = edited.map((point) => point.trim()).filter(Boolean);
-            if (!approved.length) {
-              setError("Keep at least one important point.");
-              return;
-            }
-            try {
-              await onConfirm(approved);
-              onOpenChange(false);
-            } catch (failure) {
-              setError(failure instanceof Error ? failure.message : String(failure));
-            }
-          }}>Confirm merge</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <DialogShell
+      open={open}
+      close={() => onOpenChange(false)}
+      title="Merge back to parent"
+      description="Review the important points that will be appended to the direct parent."
+      error={error}
+      footer={<>
+        <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button type="button" disabled={saving} aria-busy={saving || undefined} aria-label={saving ? "Merging" : undefined} onClick={merge}>
+          {saving ? "Merging…" : "Confirm merge"}
+        </Button>
+      </>}
+    >
+      <div className="merge-points">
+        {edited.map((point, index) => (
+          <div key={index} className="merge-point">
+            <label>Important point {index + 1}
+              <textarea aria-label={`Important point ${index + 1}`} maxLength={1000} value={point} onChange={(event) => setEdited(edited.map((value, i) => i === index ? event.target.value : value))} />
+            </label>
+            <span>
+              <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} up`} disabled={saving || index === 0} onClick={() => move(index, -1)}><ChevronUp /></Button>
+              <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} down`} disabled={saving || index === edited.length - 1} onClick={() => move(index, 1)}><ChevronDown /></Button>
+              <Button type="button" variant="outline" size="icon" aria-label={`Remove important point ${index + 1}`} disabled={saving} onClick={() => setEdited(edited.filter((_, i) => i !== index))}><Minus /></Button>
+            </span>
+          </div>
+        ))}
+        <Button type="button" variant="outline" disabled={saving} onClick={() => setEdited([...edited, ""])}><Plus /> Add point</Button>
+      </div>
+    </DialogShell>
   );
 }
 
@@ -322,7 +383,8 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
   const [events, setEvents] = useState<any[]>([]);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
   const [mobileTree, setMobileTree] = useState(false);
-  const [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number }>();
+  const [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number; source: "bubble" | "footer" }>();
+  const [createdForkUrl, setCreatedForkUrl] = useState<string>();
   const [mergePreview, setMergePreview] = useState<{ sourceConversationId: number; watermark: number; points: string[] }>();
   const [reply, setReply] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -389,50 +451,62 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
         </aside>
         {treeCollapsed && <Button type="button" className="conversation-tree-expand" variant="outline" size="icon" aria-label="Expand conversations pane" onClick={() => setTreeCollapsed(false)}><ChevronRight /></Button>}
         <Button type="button" className="conversation-mobile-tree-trigger" variant="outline" onClick={() => setMobileTree(true)}><Menu /> Conversations</Button>
-        <Dialog open={mobileTree} onOpenChange={setMobileTree}>
-          <DialogContent className="conversation-tree-sheet">
-            <DialogHeader><DialogTitle>Conversations</DialogTitle></DialogHeader>
-            <ConversationBranchTree conversations={conversations} activeId={activeId} onSelect={selectConversation} />
-          </DialogContent>
-        </Dialog>
+        <MobileConversationDrawer
+          open={mobileTree}
+          conversations={conversations}
+          activeId={activeId}
+          onClose={() => setMobileTree(false)}
+          onSelect={selectConversation}
+        />
         <section className="conversation-focus">
-          {error && <p role="alert">{error}</p>}
           <div className="conversation-thread">
-            {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId })} readOnly={readOnly} />)}
+            {error && <p role="alert">{error}</p>}
+            {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId, source: "bubble" })} readOnly={readOnly} />)}
             {!events.length && <p>No conversation yet</p>}
           </div>
-          {!readOnly && mainCanReply && <form className="conversation-composer" onKeyDown={submitFormShortcut} onSubmit={async (event) => {
-            event.preventDefault();
-            if (!reply.trim() && !files.length) return;
-            try {
-              await api(`/conversations/${activeId}/comment`, conversationReplyRequest(reply, files));
-              setReply(""); setFiles([]); await loadEvents();
-            } catch (failure) { setError(String(failure)); }
-          }}>
-            <label className="sr-only" htmlFor="conversation-reply">Reply</label>
-            <input id="conversation-files" type="file" multiple hidden onChange={(event) => {
-              const selected = Array.from(event.target.files ?? []);
+          <div className="conversation-footer">
+            {files.length > 0 && <small>{files.length} file{files.length === 1 ? "" : "s"} attached</small>}
+            {!readOnly && mainCanReply && <form className="conversation-composer" onKeyDown={submitFormShortcut} onSubmit={async (event) => {
+              event.preventDefault();
+              if (!reply.trim() && !files.length) return;
               try {
-                conversationReplyRequest("", selected);
-                setFiles(selected);
-                setError("");
-              } catch (failure) {
-                setFiles([]);
-                setError(String(failure));
-              }
-            }} />
-            <Button type="button" variant="outline" size="icon" aria-label="Add files" onClick={() => document.getElementById("conversation-files")?.click()}><Paperclip /></Button>
-            <textarea id="conversation-reply" maxLength={4000} placeholder="Reply to conversation" value={reply} onChange={(event) => setReply(event.target.value)} />
-            <Button type="submit" size="icon" aria-label="Send reply" disabled={!reply.trim() && !files.length}><Send /></Button>
-          </form>}
-          {files.length > 0 && <small>{files.length} file{files.length === 1 ? "" : "s"} attached</small>}
-          {!readOnly && <button type="button" className="conversation-fork-link" disabled={!newestEvent} onClick={() => setForkPoint({ conversationId: activeId, eventId: newestEvent })}>Fork conversation</button>}
+                await api(`/conversations/${activeId}/comment`, conversationReplyRequest(reply, files));
+                setReply(""); setFiles([]); await loadEvents();
+              } catch (failure) { setError(String(failure)); }
+            }}>
+              <label className="sr-only" htmlFor="conversation-reply">Reply</label>
+              <input id="conversation-files" type="file" multiple hidden onChange={(event) => {
+                const selected = Array.from(event.target.files ?? []);
+                try {
+                  conversationReplyRequest("", selected);
+                  setFiles(selected);
+                  setError("");
+                } catch (failure) {
+                  setFiles([]);
+                  setError(String(failure));
+                }
+              }} />
+              <Button type="button" variant="outline" size="icon" aria-label="Add files" onClick={() => document.getElementById("conversation-files")?.click()}><Paperclip /></Button>
+              <textarea id="conversation-reply" maxLength={4000} placeholder="Reply to conversation" value={reply} onChange={(event) => setReply(event.target.value)} />
+              <Button type="submit" size="icon" aria-label="Send reply" disabled={!reply.trim() && !files.length}><Send /></Button>
+            </form>}
+            {!readOnly && <button type="button" className="conversation-fork-link" disabled={!newestEvent} onClick={() => {
+              setCreatedForkUrl(undefined);
+              setForkPoint({ conversationId: activeId, eventId: newestEvent, source: "footer" });
+            }}>Fork conversation</button>}
+            {createdForkUrl && <a className="conversation-created-fork-link" href={createdForkUrl} target="_blank" rel="noopener noreferrer">Open created fork conversation</a>}
+          </div>
         </section>
       </div>
       <CreateBranchesDialog open={forkPoint !== undefined} onOpenChange={(open) => { if (!open) setForkPoint(undefined); }} onCreate={async (replies) => {
         const result = await api(`/conversations/${forkPoint!.conversationId}/forks`, { method: "POST", body: JSON.stringify({ forkEventId: forkPoint!.eventId, replies }) });
         await loadTree();
-        selectConversation(result.conversations[0].id);
+        const createdConversationId = result.conversations[0].id;
+        if (forkPoint!.source === "footer") {
+          setCreatedForkUrl(openConversationInNewTab(jobId, createdConversationId));
+        } else {
+          selectConversation(createdConversationId);
+        }
       }} />
       <MergeReviewDialog open={!!mergePreview} onOpenChange={(open) => { if (!open) setMergePreview(undefined); }} points={mergePreview?.points ?? []} onConfirm={async (points) => {
         await api(`/conversations/${mergePreview!.sourceConversationId}/merge`, {

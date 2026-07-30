@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
-import { boardLocation, conversationLocation, parseLocation, projectLocation } from "@/lib/routes";
+import { boardLocation, conversationLocation, jobLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
 import { Button } from "@/components/ui/button";
@@ -338,7 +338,7 @@ export function DoneDefinitionField({ job, value, onChange }: { job: any; value:
   ) : (
     <section className="job-inspector-section">
       <h3>Done definition</h3>
-      <p>{job.done_definition}</p>
+      <p><TimelineContent content={job.done_definition} /></p>
     </section>
   );
 }
@@ -385,10 +385,13 @@ function JobDetail({
   };
   return (
     <DialogShell title="Job detail" close={close} inspector>
-      <JobDetailMeta job={j} notify={notify} />
+      <div className="job-inspector-overview">
+        <JobDetailMeta job={j} notify={notify} />
+      </div>
+      <div className="job-inspector-work">
       <section className="job-inspector-section">
         <h3>Task</h3>
-        <p>{j.task}</p>
+        <p><TimelineContent content={j.task} /></p>
       </section>
       <DoneDefinitionField job={j} value={done} onChange={setDone} />
       {canEditDoneDefinition(j) && (
@@ -421,10 +424,14 @@ function JobDetail({
           Archive job
         </AsyncButton>
       </div>}
+      </div>
+      <div className="job-inspector-conversations">
       <JobConversationProgress progress={j.conversationProgress} jobId={job.id} />
       <a className="conversation-detail-link" href={conversationLocation(job.id)} target="_blank" rel="noopener noreferrer">
         View conversation detail
       </a>
+      </div>
+      <div className="job-inspector-activity">
       <h3>Timeline</h3>
       <JobTimeline events={j.events} state={j.state} />
       {canComment(j.state) && (
@@ -487,6 +494,7 @@ function JobDetail({
           {commentError && <p role="alert">{commentError}</p>}
         </form>
       )}
+      </div>
       {j.state === "blocked" && (
         <div className="actions">
           <label>
@@ -512,7 +520,6 @@ export function closeDetails(ref: { current: HTMLDetailsElement | null }) {
 export function useJobDetailHistory(open: boolean, close: () => void) {
   useEffect(() => {
     if (!open) return;
-    history.pushState(history.state, "", location.href);
     const pop = () => close();
     addEventListener("popstate", pop);
     return () => removeEventListener("popstate", pop);
@@ -636,6 +643,8 @@ export function App() {
       setDetail(await api("/projects/" + route.projectId));
       setJobStatus("all");
       setJobSearch("");
+    } else if (route.view === "job") {
+      setJob(jobDetail(await api(`/jobs/${route.jobId}`)));
     }
   };
   useEffect(() => {
@@ -819,7 +828,10 @@ export function App() {
       notifications.map((x) => (x.id === n.id ? { ...x, read: true } : x)),
     );
     setUnread(Math.max(0, unread - Number(!n.read)));
-    if (n.job_id) setJob(jobDetail(await api(`/jobs/${n.job_id}`)));
+    if (n.job_id) {
+      history.pushState({}, "", jobLocation(n.job_id));
+      setJob(jobDetail(await api(`/jobs/${n.job_id}`)));
+    }
     if (n.invitation_id) setInvitation(await api(`/invitations/id/${n.invitation_id}`));
   };
   return (
@@ -1322,7 +1334,10 @@ export function App() {
                   <JobCard
                     key={j.id}
                     job={j}
-                    open={() => setJob(j)}
+                    open={() => {
+                      history.pushState({}, "", jobLocation(j.id));
+                      setJob(j);
+                    }}
                     archive={async () => {
                       await runWithToast(async () => {
                         await api(`/jobs/${j.id}`, { method: "DELETE" });
