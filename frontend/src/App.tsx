@@ -13,7 +13,7 @@ import { AsyncButton } from "@/components/AsyncButton";
 import { runWithToast, Toast, type ToastMessage } from "@/components/Toast";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { ConversationPage, JobConversationProgress } from "@/components/conversations/ConversationPage";
+import { ConversationPage, CreateBranchesDialog, JobConversationProgress } from "@/components/conversations/ConversationPage";
 import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
 import { submitFormShortcut } from "@/lib/forms";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
@@ -360,6 +360,7 @@ function JobDetail({
     [commentFiles, setCommentFiles] = useState<File[]>([]),
     [sending, setSending] = useState(false),
     [commentError, setCommentError] = useState(""),
+    [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number }>(),
     j = d ?? job;
   useEffect(() => {
     const loadDetail = () =>
@@ -494,6 +495,17 @@ function JobDetail({
           {commentError && <p role="alert">{commentError}</p>}
         </form>
       )}
+      {!j.archived && <button type="button" className="job-detail-fork-link" onClick={async () => {
+        try {
+          const tree = await api(`/jobs/${job.id}/conversations`);
+          const conversation = tree.conversations.find((item: any) => item.parentConversationId === null) ?? tree.conversations[0];
+          if (!conversation) throw Error("No conversation is available to fork");
+          const events = await api(`/conversations/${conversation.id}/events`);
+          const eventId = events.at(-1)?.id;
+          if (!eventId) throw Error("No conversation event is available to fork");
+          setForkPoint({ conversationId: conversation.id, eventId });
+        } catch (failure) { setCommentError(String(failure)); }
+      }}>Fork conversation</button>}
       </div>
       {j.state === "blocked" && (
         <div className="actions">
@@ -510,6 +522,19 @@ function JobDetail({
           <AsyncButton onClick={() => action("cancel")}>Cancel to todo</AsyncButton>
         </div>
       )}
+      <CreateBranchesDialog open={forkPoint !== undefined} onOpenChange={(open) => { if (!open) setForkPoint(undefined); }} onCreate={async (replies) => {
+        const popup = window.open("", "_blank");
+        if (!popup) throw Error("Allow pop-ups to open the fork conversation");
+        popup.opener = null;
+        try {
+          const result = await api(`/conversations/${forkPoint!.conversationId}/forks`, { method: "POST", body: JSON.stringify({ forkEventId: forkPoint!.eventId, replies }) });
+          const conversationId = result.conversations[0].id;
+          popup.location.href = conversationLocation(job.id, conversationId);
+        } catch (failure) {
+          popup.close();
+          throw failure;
+        }
+      }} />
     </DialogShell>
   );
 }

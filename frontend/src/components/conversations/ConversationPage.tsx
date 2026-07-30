@@ -482,9 +482,18 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
         </section>
       </div>
       <CreateBranchesDialog open={forkPoint !== undefined} onOpenChange={(open) => { if (!open) setForkPoint(undefined); }} onCreate={async (replies) => {
-        const result = await api(`/conversations/${forkPoint!.conversationId}/forks`, { method: "POST", body: JSON.stringify({ forkEventId: forkPoint!.eventId, replies }) });
-        await loadTree();
-        selectConversation(result.conversations[0].id);
+        const popup = window.open("", "_blank");
+        if (!popup) throw Error("Allow pop-ups to open the fork conversation");
+        popup.opener = null;
+        try {
+          const result = await api(`/conversations/${forkPoint!.conversationId}/forks`, { method: "POST", body: JSON.stringify({ forkEventId: forkPoint!.eventId, replies }) });
+          const conversationId = result.conversations[0].id;
+          popup.location.href = conversationLocation(jobId, conversationId);
+          await loadTree();
+        } catch (failure) {
+          popup.close();
+          throw failure;
+        }
       }} />
       <MergeReviewDialog open={!!mergePreview} onOpenChange={(open) => { if (!open) setMergePreview(undefined); }} points={mergePreview?.points ?? []} onConfirm={async (points) => {
         await api(`/conversations/${mergePreview!.sourceConversationId}/merge`, {

@@ -178,14 +178,24 @@ describe("conversation branching", () => {
     expect(fork).toHaveBeenCalledWith(9);
   });
 
-  it("contains the laptop layout and groups the fork link directly below the composer", () => {
+  it("keeps the laptop composer and fork action visible below the scrolling thread", () => {
     const source = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
     expect(source).toMatch(/className="conversation-footer"[\s\S]*className="conversation-composer"[\s\S]*className="conversation-fork-link"/);
     const css = readFileSync("src/index.css", "utf8");
     expect(css).toMatch(/\.conversation-page\{[^}]*grid-template-rows:auto minmax\(0,1fr\)[^}]*overflow:hidden/);
     expect(css).toMatch(/\.conversation-workspace\{[^}]*min-height:0[^}]*overflow:hidden/);
     expect(css).toMatch(/\.conversation-focus\{[^}]*grid-template-rows:minmax\(0,1fr\) auto[^}]*min-height:0[^}]*overflow:hidden/);
-    expect(css).toMatch(/\.conversation-footer\{[^}]*display:grid/);
+    expect(css).toMatch(/\.conversation-thread\{[^}]*overflow-y:auto/);
+    expect(css).toMatch(/\.conversation-footer\{[^}]*display:grid[^}]*position:sticky[^}]*bottom:0/);
+  });
+
+  it("places a fork action below the job-detail reply field and opens the created fork in a new tab", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    expect(app.indexOf('className="job-detail-fork-link"')).toBeGreaterThan(app.indexOf('className="commentbox"'));
+    expect(app).toContain('className="job-detail-fork-link"');
+    const page = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
+    expect(page).toMatch(/window\.open\("", "_blank"\)/);
+    expect(page).toMatch(/popup\.location\.href = conversationLocation\(jobId, conversationId\)/);
   });
 
   it("supports editable important points in merge review", async () => {
