@@ -534,7 +534,5 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		a.appendJobEvent(id, "status", statusContent(state, "todo"))
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
-	if act != "retry" {
-		a.signal()
-	}
+	a.signal()
 }

@@ -172,34 +172,33 @@ func (a *App) retryHermes(id int64, state string) error {
 		return err
 	}
 	defer tx.Rollback()
-	var run int64
 	var session string
-	if err = tx.QueryRow("SELECT id,tmux_session FROM job_runs WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1", id).Scan(&run, &session); err != nil {
+	if err = tx.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1", id).Scan(&session); err != nil {
 		return err
 	}
 	session = strings.TrimPrefix(session, "hermes-api:")
 	if session == "" {
 		return sql.ErrNoRows
 	}
-	if _, err = tx.Exec("UPDATE jobs SET state='in_progress',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", id); err != nil {
+	res, err := tx.Exec(`UPDATE jobs SET state='todo',
+		position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),
+		pending_comment='retry',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND state=?`, id, id, state)
+	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec("UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?", run); err != nil {
-		return err
+	if changed, _ := res.RowsAffected(); changed != 1 {
+		return sql.ErrNoRows
 	}
-	if state != "in_progress" {
-		if err = appendJobEventTx(tx, id, "status", statusContent(state, "in_progress")); err != nil {
+	if state != "todo" {
+		if err = appendJobEventTx(tx, id, "status", statusContent(state, "todo")); err != nil {
 			return err
 		}
 	}
-	if err = appendJobEventTx(tx, id, "retry", "Job retried"); err != nil {
+	if err = appendJobEventTx(tx, id, "retry", "Reply sent — pending"); err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	a.runHermesJob(id, run, session, "retry")
-	return nil
+	return tx.Commit()
 }
 
 func (a *App) resumeHermesFeedback(id int64, feedback string) error {
@@ -230,7 +229,11 @@ func (a *App) resumeHermesFeedback(id int64, feedback string) error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	a.runHermesJob(id, run, session, "Review the following feedback, revise your proposal, and return it for review. Do not implement yet.\n\n"+feedback)
+	prompt := "Review the following feedback, revise your proposal, and return it for review. Do not implement yet.\n\n" + feedback
+	if feedback == "retry" {
+		prompt = feedback
+	}
+	a.runHermesJob(id, run, session, prompt)
 	return nil
 }
 

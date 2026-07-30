@@ -649,8 +649,9 @@ func TestRunHermesAcceptsV1BaseURL(t *testing.T) {
 	}
 }
 
-func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
+func TestRetryQueuesAtLaneEndThenSchedulerReusesLatestHermesSessionAndRun(t *testing.T) {
 	requestSeen := make(chan struct{}, 1)
+	var hermesCalls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/sessions/latest-session/messages" {
 			w.Write([]byte(`{"data":[]}`))
@@ -663,6 +664,7 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 		if got := r.Header.Get("X-Hermes-Session-Id"); got != "latest-session" {
 			t.Errorf("session header=%q, want latest-session", got)
 		}
+		hermesCalls.Add(1)
 		var body struct {
 			Messages []struct {
 				Role, Content string
@@ -700,19 +702,59 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, _ := res.LastInsertId()
+	if _, err = a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES(?,?,'already queued','todo',1)", user, lane); err != nil {
+		t.Fatal(err)
+	}
 
 	w, _ := req(t, h, cookie, "POST", "/api/jobs/"+itoa(job)+"/retry", `{}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("retry=%d %s", w.Code, w.Body.String())
 	}
+	if got := hermesCalls.Load(); got != 0 {
+		t.Fatalf("Hermes calls immediately after retry=%d, want 0", got)
+	}
+	var state, pending string
+	var position int
+	if err = a.DB.QueryRow("SELECT state,pending_comment,position FROM jobs WHERE id=?", job).Scan(&state, &pending, &position); err != nil {
+		t.Fatal(err)
+	}
+	if state != "todo" || pending != "retry" || position != 2 {
+		t.Fatalf("queued retry state=%q pending=%q position=%d; want todo, retry, 2", state, pending, position)
+	}
+	var attempts, runs, runningRuns int
+	a.DB.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", job).Scan(&attempts)
+	a.DB.QueryRow("SELECT count(*) FROM job_runs WHERE job_id=?", job).Scan(&runs)
+	a.DB.QueryRow("SELECT count(*) FROM job_runs WHERE job_id=? AND status='running'", job).Scan(&runningRuns)
+	if attempts != 1 || runs != 2 || runningRuns != 0 {
+		t.Fatalf("attempts=%d runs=%d running=%d, want unchanged 1, 2, 0", attempts, runs, runningRuns)
+	}
+	var status, summary string
+	a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE id=?", run).Scan(&status, &summary)
+	if status != "done" || summary != "" {
+		t.Fatalf("latest run status=%q summary=%q", status, summary)
+	}
+	var retryEvent string
+	if err = a.DB.QueryRow("SELECT content FROM job_events WHERE job_run_id=? AND kind='retry'", run).Scan(&retryEvent); err != nil {
+		t.Fatal(err)
+	}
+	if retryEvent != "Reply sent — pending" {
+		t.Fatalf("retry timeline event=%q", retryEvent)
+	}
+
+	if _, err = a.DB.Exec("UPDATE jobs SET archived=1 WHERE lane_id=? AND id<>?", lane, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("UPDATE lanes SET paused=0 WHERE id=?", lane); err != nil {
+		t.Fatal(err)
+	}
+	a.schedule()
 	select {
 	case <-requestSeen:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Hermes retry request not received")
+		t.Fatal("Hermes retry request not received after scheduling")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		var state string
 		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state)
 		if state == "in_review" {
 			break
@@ -722,21 +764,9 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	var attempts, runs int
-	a.DB.QueryRow("SELECT attempt_count FROM jobs WHERE id=?", job).Scan(&attempts)
-	a.DB.QueryRow("SELECT count(*) FROM job_runs WHERE job_id=?", job).Scan(&runs)
-	if attempts != 1 || runs != 2 {
-		t.Fatalf("attempts=%d runs=%d, want unchanged 1 and 2", attempts, runs)
-	}
-	var status, summary string
 	a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE id=?", run).Scan(&status, &summary)
 	if status != "done" || summary != "retried" {
-		t.Fatalf("latest run status=%q summary=%q", status, summary)
-	}
-	var retryEvents int
-	a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='retry'", run).Scan(&retryEvents)
-	if retryEvents != 1 {
-		t.Fatalf("retry events on reused run=%d", retryEvents)
+		t.Fatalf("scheduled run status=%q summary=%q", status, summary)
 	}
 }
 
