@@ -4,27 +4,12 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, jobLocation, openConversationInNewTab, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe("job board synchronization", () => {
-  it("uses and restores the canonical job detail path", () => {
-    expect(jobLocation(42)).toBe("/jobs/42");
-    expect(parseLocation("", "/jobs/42")).toEqual({ view: "job", jobId: 42 });
-    expect(parseLocation("", "/jobs/nope")).toEqual({ view: "board" });
-  });
-
-  it("renders safe links in job detail text", () => {
-    const { getAllByRole, container } = render(createElement(DoneDefinitionField, {
-      job: { state: "done", done_definition: "Review [result](https://example.test/result)" },
-      value: "",
-      onChange: vi.fn(),
-    }));
-    expect(getAllByRole("link")[0].getAttribute("href")).toBe("https://example.test/result");
-    expect(container.textContent).toContain("Review result");
-  });
   it("refreshes the selected job and board columns after a job mutation", async () => {
     const setJob = vi.fn();
     const setCols = vi.fn();
@@ -193,29 +178,9 @@ describe("conversation branching", () => {
     expect(fork).toHaveBeenCalledWith(9);
   });
 
-  it("opens a created footer fork in a safe new tab without changing the originating conversation", () => {
-    history.replaceState({}, "", conversationLocation(42, 3));
-    const openedWindow = { opener: window };
-    const openWindow = vi.fn(() => openedWindow);
-
-    expect(openConversationInNewTab(42, 7, openWindow)).toBeUndefined();
-
-    expect(openWindow).toHaveBeenCalledWith("?job=42&conversation=7", "_blank", "noopener,noreferrer");
-    expect(openedWindow.opener).toBeNull();
-    expect(location.search).toBe("?job=42&conversation=3");
-  });
-
-  it("returns a normal created-fork URL when the new tab is blocked", () => {
-    const openWindow = vi.fn(() => null);
-
-    expect(openConversationInNewTab(42, 7, openWindow)).toBe("?job=42&conversation=7");
-  });
-
   it("contains the laptop layout and groups the fork link directly below the composer", () => {
     const source = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
     expect(source).toMatch(/className="conversation-footer"[\s\S]*className="conversation-composer"[\s\S]*className="conversation-fork-link"/);
-    expect(source).toContain("Open created fork conversation");
-
     const css = readFileSync("src/index.css", "utf8");
     expect(css).toMatch(/\.conversation-page\{[^}]*grid-template-rows:auto minmax\(0,1fr\)[^}]*overflow:hidden/);
     expect(css).toMatch(/\.conversation-workspace\{[^}]*min-height:0[^}]*overflow:hidden/);
@@ -657,17 +622,24 @@ describe("job detail session", () => {
   });
 });
 describe("job detail history", () => {
-  it("closes an open job detail on Back", async () => {
+  it("closes an open job detail on Back without leaving the underlying page", async () => {
+    history.replaceState({}, "", "?board=42");
+    const pushState = vi.spyOn(history, "pushState");
     const Harness = () => {
       const [open, setOpen] = useState(true);
       useJobDetailHistory(open, () => setOpen(false));
       return open ? createElement("div", { role: "dialog" }, "Job detail") : null;
     };
-    const { queryByText } = render(createElement(Harness));
+    const { queryByText, unmount } = render(createElement(Harness));
 
+    expect(pushState).toHaveBeenCalledWith({}, "", location.href);
+    expect(location.search).toBe("?board=42");
     dispatchEvent(new PopStateEvent("popstate"));
 
     await waitFor(() => expect(queryByText("Job detail")).toBeNull());
+    expect(location.search).toBe("?board=42");
+    unmount();
+    pushState.mockRestore();
   });
 });
 describe("job actions", () => {

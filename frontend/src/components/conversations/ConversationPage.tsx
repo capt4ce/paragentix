@@ -41,18 +41,6 @@ export function initialConversationSelection(requestedId: number | undefined, co
 export const conversationEventsBelongTo = (requestedConversationId: number, activeConversationId: number) =>
   requestedConversationId === activeConversationId;
 
-export function openConversationInNewTab(
-  jobId: number,
-  conversationId: number,
-  openWindow: (url: string, target: string, features: string) => { opener: Window | null } | null =
-    (url, target, features) => window.open(url, target, features),
-) {
-  const url = conversationLocation(jobId, conversationId);
-  const opened = openWindow(url, "_blank", "noopener,noreferrer");
-  if (!opened) return url;
-  opened.opener = null;
-}
-
 export function conversationReplyRequest(comment: string, files: File[]): RequestInit {
   if (files.length > MAX_CONVERSATION_ATTACHMENTS) throw Error(`At most ${MAX_CONVERSATION_ATTACHMENTS} files may be attached`);
   if (files.some((file) => file.size > MAX_CONVERSATION_ATTACHMENT_SIZE)) throw Error("Each attachment must be 20 MB or smaller");
@@ -383,8 +371,7 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
   const [events, setEvents] = useState<any[]>([]);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
   const [mobileTree, setMobileTree] = useState(false);
-  const [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number; source: "bubble" | "footer" }>();
-  const [createdForkUrl, setCreatedForkUrl] = useState<string>();
+  const [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number }>();
   const [mergePreview, setMergePreview] = useState<{ sourceConversationId: number; watermark: number; points: string[] }>();
   const [reply, setReply] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -461,7 +448,7 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
         <section className="conversation-focus">
           <div className="conversation-thread">
             {error && <p role="alert">{error}</p>}
-            {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId, source: "bubble" })} readOnly={readOnly} />)}
+            {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId })} readOnly={readOnly} />)}
             {!events.length && <p>No conversation yet</p>}
           </div>
           <div className="conversation-footer">
@@ -490,23 +477,14 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
               <textarea id="conversation-reply" maxLength={4000} placeholder="Reply to conversation" value={reply} onChange={(event) => setReply(event.target.value)} />
               <Button type="submit" size="icon" aria-label="Send reply" disabled={!reply.trim() && !files.length}><Send /></Button>
             </form>}
-            {!readOnly && <button type="button" className="conversation-fork-link" disabled={!newestEvent} onClick={() => {
-              setCreatedForkUrl(undefined);
-              setForkPoint({ conversationId: activeId, eventId: newestEvent, source: "footer" });
-            }}>Fork conversation</button>}
-            {createdForkUrl && <a className="conversation-created-fork-link" href={createdForkUrl} target="_blank" rel="noopener noreferrer">Open created fork conversation</a>}
+            {!readOnly && <button type="button" className="conversation-fork-link" disabled={!newestEvent} onClick={() => setForkPoint({ conversationId: activeId, eventId: newestEvent })}>Fork conversation</button>}
           </div>
         </section>
       </div>
       <CreateBranchesDialog open={forkPoint !== undefined} onOpenChange={(open) => { if (!open) setForkPoint(undefined); }} onCreate={async (replies) => {
         const result = await api(`/conversations/${forkPoint!.conversationId}/forks`, { method: "POST", body: JSON.stringify({ forkEventId: forkPoint!.eventId, replies }) });
         await loadTree();
-        const createdConversationId = result.conversations[0].id;
-        if (forkPoint!.source === "footer") {
-          setCreatedForkUrl(openConversationInNewTab(jobId, createdConversationId));
-        } else {
-          selectConversation(createdConversationId);
-        }
+        selectConversation(result.conversations[0].id);
       }} />
       <MergeReviewDialog open={!!mergePreview} onOpenChange={(open) => { if (!open) setMergePreview(undefined); }} points={mergePreview?.points ?? []} onConfirm={async (points) => {
         await api(`/conversations/${mergePreview!.sourceConversationId}/merge`, {
