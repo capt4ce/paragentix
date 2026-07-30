@@ -350,7 +350,7 @@ function JobDetail({
 }: {
   job: any;
   close: () => void;
-  refresh: () => void;
+  refresh: () => Promise<void>;
   notify: (toast: ToastMessage) => void;
 }) {
   const [d, setD] = useState<any>(),
@@ -379,7 +379,7 @@ function JobDetail({
         method: "POST",
         body: JSON.stringify(body),
       });
-      refresh();
+      await refresh();
       close();
     }, notify, `Job ${job.id} ${a === "retry" ? "retried" : a}`, `Failed to ${a} job ${job.id}`);
   };
@@ -517,6 +517,21 @@ export function useJobDetailHistory(open: boolean, close: () => void) {
     addEventListener("popstate", pop);
     return () => removeEventListener("popstate", pop);
   }, [open]);
+}
+
+export async function refreshJobAndBoard(
+  jobId: number,
+  boardId: number | undefined,
+  setJob: (job: any) => void,
+  setCols: (columns: any[]) => void,
+  request: (path: string) => Promise<any> = api,
+) {
+  const [detail, columns] = await Promise.all([
+    request(`/jobs/${jobId}`),
+    boardId ? request(`/boards/${boardId}/columns`) : Promise.resolve(undefined),
+  ]);
+  setJob(jobDetail(detail));
+  if (columns) setCols(columns);
 }
 
 export function App() {
@@ -1507,7 +1522,7 @@ export function App() {
         <JobDetail
           job={job}
           close={() => history.back()}
-          refresh={async () => setJob(jobDetail(await api(`/jobs/${job.id}`)))}
+          refresh={() => refreshJobAndBoard(job.id, board?.id, setJob, setCols)}
           notify={setToast}
         />
       )}

@@ -4,11 +4,27 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+describe("job board synchronization", () => {
+  it("refreshes the selected job and board columns after a job mutation", async () => {
+    const setJob = vi.fn();
+    const setCols = vi.fn();
+    const request = vi.fn(async (path: string) => path.includes("/boards/")
+      ? [{ id: 3, jobs: [{ id: 9, state: "in_progress" }] }]
+      : { job: { id: 9, state: "in_progress" }, events: [] });
+
+    await refreshJobAndBoard(9, 4, setJob, setCols, request);
+
+    expect(request).toHaveBeenCalledWith("/jobs/9");
+    expect(request).toHaveBeenCalledWith("/boards/4/columns");
+    expect(setJob).toHaveBeenCalledWith(expect.objectContaining({ id: 9, state: "in_progress" }));
+    expect(setCols).toHaveBeenCalledWith([{ id: 3, jobs: [{ id: 9, state: "in_progress" }] }]);
+  });
+});
 describe("form submit shortcut", () => {
   it.each([{ ctrlKey: true }, { metaKey: true }])("submits for Ctrl/Cmd+Enter", modifier => {
     const submit = vi.fn((event: Event) => event.preventDefault());
