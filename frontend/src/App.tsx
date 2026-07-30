@@ -80,7 +80,7 @@ const intermediaryPreview = (content: string) => {
 };
 function TimelineEvent({ event }: { event: any }) {
   return (
-    <div className={`${isConversationEvent(event.kind) ? `bubble ${eventSide(event.kind)}` : "timeline-entry"} ${event.kind}`}>
+    <div data-reply-target={event.kind === "reply" ? "" : undefined} className={`${isConversationEvent(event.kind) ? `bubble ${eventSide(event.kind)}` : "timeline-entry"} ${event.kind}`}>
       <small>{eventSide(event.kind) === "sent" ? "You" : eventLabel(event.kind)}</small>
       <span><TimelineContent content={event.content} /></span>
     </div>
@@ -88,8 +88,32 @@ function TimelineEvent({ event }: { event: any }) {
 }
 export function JobTimeline({ events = [], state }: { events?: any[]; state: string }) {
   const groups = groupTimelineEvents(events);
+  const timeline = useRef<HTMLDivElement>(null);
+  const initiallyPositioned = useRef(false);
+  const replyIndex = useRef(-1);
+  useEffect(() => {
+    if (!initiallyPositioned.current && events.length && timeline.current) {
+      timeline.current.scrollTop = timeline.current.scrollHeight;
+      initiallyPositioned.current = true;
+      replyIndex.current = timeline.current.querySelectorAll("[data-reply-target]").length;
+    }
+  }, [events.length]);
+  const replies = () => Array.from(timeline.current?.querySelectorAll<HTMLElement>("[data-reply-target]") || []);
+  const moveReply = (offset: number) => {
+    const targets = replies();
+    if (!targets.length) return;
+    replyIndex.current = Math.max(0, Math.min(targets.length - 1, replyIndex.current + offset));
+    targets[replyIndex.current]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
   return (
-    <div className="conversation">
+    <div className="timeline-shell">
+      <div className="timeline-controls" aria-label="Timeline navigation">
+        <button type="button" aria-label="Go to top" title="Go to top" onClick={() => timeline.current?.scrollTo({ top: 0, behavior: "smooth" })}>↑</button>
+        <button type="button" aria-label="Previous reply" title="Previous reply" onClick={() => moveReply(-1)}>‹</button>
+        <button type="button" aria-label="Next reply" title="Next reply" onClick={() => moveReply(1)}>›</button>
+        <button type="button" aria-label="Go to bottom" title="Go to bottom" onClick={() => timeline.current?.scrollTo({ top: timeline.current.scrollHeight, behavior: "smooth" })}>↓</button>
+      </div>
+    <div className="conversation" ref={timeline}>
       {groups.length ? groups.map((group) => {
         if (group.kind === "event") {
           return <TimelineEvent key={group.event.id} event={group.event} />;
@@ -117,6 +141,7 @@ export function JobTimeline({ events = [], state }: { events?: any[]; state: str
         </div>
       )}
     </div>
+    </div>
   );
 }
 export const mergeNotifications = (current: any[], incoming: any[]) => [
@@ -124,7 +149,7 @@ export const mergeNotifications = (current: any[], incoming: any[]) => [
   ...incoming.filter((x) => !current.some((y) => y.id === x.id)),
 ];
 export const canComment = (state: string) =>
-  state === "in_progress" || state === "blocked" || state === "done";
+  state === "in_progress" || state === "in_review" || state === "blocked" || state === "done";
 export const canEditDoneDefinition = (job: any) =>
   job.state === "todo" && job.attempt_count === 0;
 export const jobDetail = (x: any) => x.job
@@ -146,7 +171,7 @@ export const filterProjectJobs = (jobs: any[], status: string, search: string) =
   const query = search.trim().toLocaleLowerCase();
   return jobs.filter((job) =>
     (status === "all" || job.state === status) &&
-    (!query || job.task.toLocaleLowerCase().includes(query)));
+    (!query || (job.title || job.task).toLocaleLowerCase().includes(query)));
 };
 export function WorkspaceUserStatus({ status }: { status: "invited" | "member" }) {
   return <Badge className={status === "invited" ? "border-yellow-600 bg-yellow-100 text-yellow-800" : "border-green-600 bg-green-100 text-green-800"}>{status === "invited" ? "Invited" : "Member"}</Badge>;
@@ -174,6 +199,30 @@ export function jobCreationRequest(form: { task: string; doneDefinition?: string
     method: "POST",
     body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition }),
   };
+}
+export const jobDraftKey = (user: string | number, board: string | number, entry: string) =>
+  `paragentix:job-draft:${encodeURIComponent(String(user))}:${board}:${entry}`;
+export function loadJobDraft(key: string): { task: string; doneDefinition: string; columnId?: number } | null {
+  try {
+    const value = localStorage.getItem(key);
+    if (!value) return null;
+    const draft = JSON.parse(value);
+    const columnId = Number(draft.columnId);
+    return { task: String(draft.task || ""), doneDefinition: String(draft.doneDefinition || ""), ...(columnId ? { columnId } : {}) };
+  } catch {
+    return null;
+  }
+}
+export function saveJobDraft(key: string, draft: { task?: string; doneDefinition?: string; columnId?: number | string; files?: File[] }) {
+  try {
+    const columnId = Number(draft.columnId);
+    const serializable = { task: draft.task || "", doneDefinition: draft.doneDefinition || "", ...(columnId ? { columnId } : {}) };
+    if (serializable.task || serializable.doneDefinition) localStorage.setItem(key, JSON.stringify(serializable));
+    else localStorage.removeItem(key);
+  } catch {}
+}
+export function clearJobDraft(key: string) {
+  try { localStorage.removeItem(key); } catch {}
 }
 export const MAX_ATTACHMENTS = 20;
 export const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
@@ -204,10 +253,12 @@ export function JobCard({
   archive: () => Promise<void>;
 }) {
   const creatorTooltipId = useId();
+  const identity = job.title || job.task;
+  const visibleIdentity = abbreviatedJobTask(identity);
   return (
     <article className={"job " + job.state}>
       <button type="button" className="job-open" onClick={open}>
-        <b title={job.task}>{abbreviatedJobTask(job.task)}</b>
+        <b title={identity}>{visibleIdentity}</b>
         <StatusBadge state={job.state} />
         <JobConversationProgress progress={job.conversationProgress} compact />
       </button>
@@ -231,7 +282,7 @@ export function JobCard({
       <AsyncButton
         type="button"
         className="job-archive danger"
-        aria-label={`Archive ${job.task}`}
+        aria-label={`Archive ${identity}`}
         title="Archive job"
         onClick={async (e) => {
           e.stopPropagation();
@@ -246,6 +297,7 @@ export function JobCard({
 export function JobDetailMeta({ job, notify = () => {} }: { job: any; notify?: (toast: ToastMessage) => void }) {
   return (
     <>
+      <h2 className="job-inspector-title">{job.title || (job.task ? abbreviatedJobTask(job.task) : "Job")}</h2>
       <p className="job-inspector-meta">
         <b>{job.state}</b> · attempt {job.attempt_count}
       </p>
@@ -349,6 +401,7 @@ function JobDetail({
       )}
       {j.warning && <p role="alert">{j.warning}</p>}
       {!j.archived && <div className="job-inspector-actions">
+        {j.state === "in_review" && <AsyncButton onClick={() => action("approve")}>Approve implementation</AsyncButton>}
         <AsyncButton onClick={() => action("retry")}>Retry job</AsyncButton>
         <AsyncButton
           className="danger"
@@ -472,6 +525,8 @@ export function App() {
     [items, setItems] = useState<any[]>([]),
     [dialog, setDialog] = useState(""),
     [form, setForm] = useState<any>({}),
+    [draftEntry, setDraftEntry] = useState(""),
+    [draftVersion, setDraftVersion] = useState(0),
     [settings, setSettings] = useState<any>(),
     [error, setError] = useState(""),
     [notifications, setNotifications] = useState<any[]>([]),
@@ -487,6 +542,25 @@ export function App() {
   const dismissToast = useCallback(() => setToast(undefined), []);
   const menu = useRef<HTMLDetailsElement>(null);
   const draggedColumn = useRef<number | null>(null);
+  const draftKeyFor = (entry: string) => jobDraftKey(me?.email || me?.id || "anonymous", board?.id || "none", entry);
+  const hasDraft = (entry: string) => {
+    void draftVersion;
+    return !!loadJobDraft(draftKeyFor(entry));
+  };
+  const openJobDialog = (entry: string, columnId: number, chooseColumn = false) => {
+    const draft = loadJobDraft(draftKeyFor(entry));
+    setDraftEntry(entry);
+    setForm({ columnId: draft?.columnId || columnId, chooseColumn, task: draft?.task || "", doneDefinition: draft?.doneDefinition || "" });
+    setDialog("job");
+  };
+  const updateJobForm = (patch: Record<string, unknown>) => {
+    const next = { ...form, ...patch };
+    setForm(next);
+    if (draftEntry) {
+      saveJobDraft(draftKeyFor(draftEntry), next);
+      setDraftVersion((value) => value + 1);
+    }
+  };
   const reorderColumns = async (from: number, to: number) => {
     const previous = cols;
     const reordered = moveColumn(previous, from, to);
@@ -681,6 +755,11 @@ export function App() {
         await api(`/workspaces/${detail.id}/members/${form.id}`, {
           method: "DELETE",
         });
+      if (dialog === "job" && draftEntry) {
+        clearJobDraft(draftKeyFor(draftEntry));
+        setDraftEntry("");
+        setDraftVersion((value) => value + 1);
+      }
       setDialog("");
       setForm({});
       await load();
@@ -758,11 +837,10 @@ export function App() {
               <button
                 disabled={!cols.length}
                 onClick={() => {
-                  setForm({ columnId: cols[0]?.id, task: "", doneDefinition: "", chooseColumn: true });
-                  setDialog("job");
+                  openJobDialog("top", cols[0]?.id, true);
                 }}
               >
-                Create job
+                Create job {hasDraft("top") && <span className="draft-indicator">Draft</span>}
               </button>
             </>
           )}
@@ -866,11 +944,11 @@ export function App() {
           <AsyncButton className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); history.pushState({}, "", "?projects=1"); }}>← Projects</AsyncButton>
           <section className="panel project-details"><h2>{detail.name}</h2><span>Workspace: {detail.workspaceName}</span><code>{detail.directory}</code></section>
           <div className="pagehead"><h3>Jobs</h3><div className="job-filters">
-            <Input aria-label="Search job tasks" placeholder="Search task…" value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} />
-            <select aria-label="Filter jobs by status" value={jobStatus} onChange={(e) => setJobStatus(e.target.value)}><option value="all">All statuses</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="blocked">Blocked</option><option value="done">Done</option></select>
+            <Input aria-label="Search job titles" placeholder="Search title…" value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} />
+            <select aria-label="Filter jobs by status" value={jobStatus} onChange={(e) => setJobStatus(e.target.value)}><option value="all">All statuses</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="blocked">Blocked</option><option value="done">Done</option></select>
           </div></div>
           <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Board / column</th><th>Updated</th></tr></thead><tbody>
-            {filterProjectJobs(detail.jobs, jobStatus, jobSearch).map((j) => <tr key={j.id}><td>{j.task}</td><td><StatusBadge state={j.state} /></td><td>{j.boardName} / {j.columnName}</td><td>{j.updated_at}</td></tr>)}
+            {filterProjectJobs(detail.jobs, jobStatus, jobSearch).map((j) => <tr key={j.id}><td>{j.title || abbreviatedJobTask(j.task)}</td><td><StatusBadge state={j.state} /></td><td>{j.boardName} / {j.columnName}</td><td>{j.updated_at}</td></tr>)}
           </tbody></table>{!filterProjectJobs(detail.jobs, jobStatus, jobSearch).length && <p className="empty">No jobs match these filters.</p>}</div>
         </main>
       )}
@@ -1060,8 +1138,27 @@ export function App() {
                   onChange={(e) => setSettings({ ...settings, hermes_model: e.target.value })}
                 />
               </label>
+              <h3>Telegram notifications</h3>
+              <label>
+                <input
+                  type="checkbox"
+                  disabled={detail.role !== "owner" || !settings.telegram_available}
+                  checked={!!settings.telegram_enabled}
+                  onChange={(e) => setSettings({ ...settings, telegram_enabled: e.target.checked })}
+                />{" "}
+                Enabled
+              </label>
+              <label>
+                Telegram chat ID
+                <input
+                  disabled={detail.role !== "owner"}
+                  value={settings.telegram_chat_id || ""}
+                  onChange={(e) => setSettings({ ...settings, telegram_chat_id: e.target.value })}
+                />
+              </label>
+              {!settings.telegram_available && <small>Set TELEGRAM_BOT_TOKEN on the server to enable Telegram.</small>}
               {detail.role === "owner" && (
-                <AsyncButton onClick={async () => {
+                <><AsyncButton onClick={async () => {
                   try {
                     setSettings(await api(`/workspaces/${detail.id}/settings`, {
                       method: "PATCH",
@@ -1071,6 +1168,14 @@ export function App() {
                     setError(String(e));
                   }
                 }}>Save</AsyncButton>
+                <AsyncButton disabled={!settings.telegram_enabled || !settings.telegram_chat_id} onClick={async () => {
+                  await runWithToast(
+                    () => api(`/workspaces/${detail.id}/settings/telegram-test`, { method: "POST", body: "{}" }),
+                    setToast,
+                    "Telegram test sent",
+                    "Failed to send Telegram test",
+                  );
+                }}>Send test</AsyncButton></>
               )}
             </section>
           )}
@@ -1203,11 +1308,10 @@ export function App() {
                 <button
                   className="add"
                   onClick={() => {
-                    setForm({ columnId: c.id, task: "", doneDefinition: "" });
-                    setDialog("job");
+                    openJobDialog(`column:${c.id}`, c.id);
                   }}
                 >
-                  + Add job
+                  {hasDraft(`column:${c.id}`) && <span className="draft-indicator">Draft</span>} + Add job
                 </button>
               </section>
             ))}
@@ -1215,7 +1319,7 @@ export function App() {
         </>
       )}
       {dialog && (
-        <DialogShell title={dialog} close={() => setDialog("")}>
+        <DialogShell title={dialog} close={() => setDialog("")} preventOutsideClose={dialog === "job"}>
           {error && <p role="alert">{error}</p>}
           {dialog === "profile" ? (
             <p>{me.email}</p>
@@ -1246,7 +1350,7 @@ export function App() {
                       <select
                         required
                         value={form.columnId || ""}
-                        onChange={(e) => setForm({ ...form, columnId: e.target.value })}
+                        onChange={(e) => updateJobForm({ columnId: e.target.value })}
                       >
                         <option value="">Select…</option>
                         {cols.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -1256,20 +1360,18 @@ export function App() {
                   <label>
                     Task
                     <textarea
+                      className="job-task-input"
                       required
+                      maxLength={4000}
                       value={form.task || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, task: e.target.value })
-                      }
+                      onChange={(e) => updateJobForm({ task: e.target.value })}
                     />
                   </label>
                   <label>
                     Done definition
                     <textarea
                       value={form.doneDefinition || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, doneDefinition: e.target.value })
-                      }
+                      onChange={(e) => updateJobForm({ doneDefinition: e.target.value })}
                     />
                   </label>
                   <label>
@@ -1277,11 +1379,10 @@ export function App() {
                     <input
                       type="file"
                       multiple
-                      onChange={(e) =>
-                        setForm({ ...form, files: Array.from(e.target.files || []) })
-                      }
+                      onChange={(e) => updateJobForm({ files: Array.from(e.target.files || []) })}
                     />
                     <small>Up to 20 files of any type, 20 MB each.</small>
+                    {loadJobDraft(draftKeyFor(draftEntry)) && <small>Files are not saved in drafts and must be reattached.</small>}
                   </label>
                 </>
               ) : (
@@ -1366,6 +1467,15 @@ export function App() {
               >
                 Save
               </AsyncButton>
+              {dialog === "job" && (
+                <button className="danger" type="button" onClick={() => {
+                  clearJobDraft(draftKeyFor(draftEntry));
+                  setDraftEntry("");
+                  setDraftVersion((value) => value + 1);
+                  setForm({});
+                  setDialog("");
+                }}>Discard draft</button>
+              )}
             </>
           )}
         </DialogShell>

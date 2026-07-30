@@ -15,9 +15,11 @@ func (a *App) workspaceSettings(w http.ResponseWriter, r *http.Request, workspac
 			return
 		}
 		var x struct {
-			HermesURL    string `json:"hermes_url"`
-			HermesAPIKey string `json:"hermes_api_key"`
-			HermesModel  string `json:"hermes_model"`
+			HermesURL       string  `json:"hermes_url"`
+			HermesAPIKey    string  `json:"hermes_api_key"`
+			HermesModel     string  `json:"hermes_model"`
+			TelegramEnabled *bool   `json:"telegram_enabled"`
+			TelegramChatID  *string `json:"telegram_chat_id"`
 		}
 		if decode(r, &x) != nil {
 			fail(w, 400, "invalid settings")
@@ -31,10 +33,49 @@ func (a *App) workspaceSettings(w http.ResponseWriter, r *http.Request, workspac
 			return
 		}
 		a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key=CASE WHEN ?='' THEN hermes_api_key ELSE ? END,hermes_model=? WHERE id=?", x.HermesURL, x.HermesAPIKey, x.HermesAPIKey, x.HermesModel, workspaceID)
+		if x.TelegramEnabled != nil || x.TelegramChatID != nil {
+			var enabled bool
+			var chat string
+			a.DB.QueryRow(`SELECT telegram_enabled,telegram_chat_id FROM workspaces WHERE id=?`, workspaceID).Scan(&enabled, &chat)
+			if x.TelegramEnabled != nil {
+				enabled = *x.TelegramEnabled
+			}
+			if x.TelegramChatID != nil {
+				chat = strings.TrimSpace(*x.TelegramChatID)
+			}
+			if enabled && (chat == "" || a.TelegramBotToken == "") {
+				fail(w, 400, "Telegram chat ID and server bot token required")
+				return
+			}
+			a.DB.Exec(`UPDATE workspaces SET telegram_enabled=?,telegram_chat_id=? WHERE id=?`, enabled, chat, workspaceID)
+		}
 	}
-	var hermesURL, hermesModel, key string
-	a.DB.QueryRow("SELECT hermes_url,hermes_model,hermes_api_key FROM workspaces WHERE id=?", workspaceID).Scan(&hermesURL, &hermesModel, &key)
-	jsonOut(w, 200, map[string]any{"hermes_url": hermesURL, "hermes_model": hermesModel, "hermes_api_key": "", "hermes_api_key_set": key != ""})
+	var hermesURL, hermesModel, key, telegramChatID string
+	var telegramEnabled bool
+	a.DB.QueryRow("SELECT hermes_url,hermes_model,hermes_api_key,telegram_chat_id,telegram_enabled FROM workspaces WHERE id=?", workspaceID).Scan(&hermesURL, &hermesModel, &key, &telegramChatID, &telegramEnabled)
+	jsonOut(w, 200, map[string]any{"hermes_url": hermesURL, "hermes_model": hermesModel, "hermes_api_key": "", "hermes_api_key_set": key != "", "telegram_chat_id": telegramChatID, "telegram_enabled": telegramEnabled, "telegram_available": a.TelegramBotToken != ""})
+}
+
+func (a *App) telegramTest(w http.ResponseWriter, r *http.Request, workspaceID int64, role string) {
+	if r.Method != "POST" {
+		fail(w, 405, "method not allowed")
+		return
+	}
+	if role != "owner" {
+		fail(w, 403, "owner required")
+		return
+	}
+	var enabled bool
+	var chat string
+	if err := a.DB.QueryRow(`SELECT telegram_enabled,telegram_chat_id FROM workspaces WHERE id=?`, workspaceID).Scan(&enabled, &chat); err != nil || !enabled || strings.TrimSpace(chat) == "" || a.TelegramBotToken == "" {
+		fail(w, 409, "Telegram notifications are not configured")
+		return
+	}
+	if err := a.sendTelegram(workspaceID, "Paragentix test notification", "Telegram notifications are configured.", 0); err != nil {
+		fail(w, 502, err.Error())
+		return
+	}
+	jsonOut(w, 200, map[string]bool{"ok": true})
 }
 func available(name string) bool { _, e := exec.LookPath(name); return e == nil }
 func (a *App) tools(w http.ResponseWriter, r *http.Request) {

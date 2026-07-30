@@ -83,7 +83,11 @@ func (a *App) workspacePath(w http.ResponseWriter, r *http.Request) {
 		case "boards":
 			a.workspaceBoards(w, r, id)
 		case "settings":
-			a.workspaceSettings(w, r, id, role)
+			if len(parts) > 2 && parts[2] == "telegram-test" {
+				a.telegramTest(w, r, id, role)
+			} else {
+				a.workspaceSettings(w, r, id, role)
+			}
 		default:
 			fail(w, 404, "not found")
 		}

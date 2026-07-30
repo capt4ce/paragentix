@@ -151,7 +151,7 @@ func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
-		rows, queryErr := a.DB.Query(`SELECT j.id,j.task,j.state,j.attempt_count,j.created_at,j.updated_at,u.email,b.name,c.name
+		rows, queryErr := a.DB.Query(`SELECT j.id,j.title,j.task,j.state,j.attempt_count,j.created_at,j.updated_at,u.email,b.name,c.name
 			FROM jobs j JOIN users u ON u.id=j.user_id JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id
 			WHERE c.project_id=? AND c.archived=0 AND j.archived=0 ORDER BY j.updated_at DESC,j.id DESC`, id)
 		if queryErr != nil {
@@ -163,9 +163,9 @@ func (a *App) projectPath(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var jobID int64
 			var attempts int
-			var task, state, created, updated, creator, board, column string
-			if rows.Scan(&jobID, &task, &state, &attempts, &created, &updated, &creator, &board, &column) == nil {
-				jobs = append(jobs, map[string]any{"id": jobID, "task": task, "state": state, "attempt_count": attempts, "created_at": created, "updated_at": updated, "creatorName": creator, "boardName": board, "columnName": column})
+			var title, task, state, created, updated, creator, board, column string
+			if rows.Scan(&jobID, &title, &task, &state, &attempts, &created, &updated, &creator, &board, &column) == nil {
+				jobs = append(jobs, map[string]any{"id": jobID, "title": title, "task": task, "state": state, "attempt_count": attempts, "created_at": created, "updated_at": updated, "creatorName": creator, "boardName": board, "columnName": column})
 			}
 		}
 		var workspace string

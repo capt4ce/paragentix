@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -20,15 +21,15 @@ func (a *App) notifications(w http.ResponseWriter, r *http.Request) {
 	if before == 0 {
 		before = 1 << 62
 	}
-	rows, _ := a.DB.Query(`SELECT id,job_id,invitation_id,kind,title,read,created_at FROM notifications WHERE user_id=? AND id<? ORDER BY id DESC LIMIT ?`, uid(r), before, limit+1)
+	rows, _ := a.DB.Query(`SELECT id,job_id,invitation_id,kind,title,action,job_title,read,created_at FROM notifications WHERE user_id=? AND id<? ORDER BY id DESC LIMIT ?`, uid(r), before, limit+1)
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
 		var id int64
 		var job, invitation sql.NullInt64
-		var kind, title, created string
+		var kind, title, action, jobTitle, created string
 		var read bool
-		rows.Scan(&id, &job, &invitation, &kind, &title, &read, &created)
+		rows.Scan(&id, &job, &invitation, &kind, &title, &action, &jobTitle, &read, &created)
 		var jobID any
 		if job.Valid {
 			jobID = job.Int64
@@ -37,7 +38,10 @@ func (a *App) notifications(w http.ResponseWriter, r *http.Request) {
 		if invitation.Valid {
 			invitationID = invitation.Int64
 		}
-		out = append(out, map[string]any{"id": id, "job_id": jobID, "invitation_id": invitationID, "kind": kind, "title": title, "read": read, "created_at": created})
+		if action == "" {
+			action = title
+		}
+		out = append(out, map[string]any{"id": id, "job_id": jobID, "invitation_id": invitationID, "kind": kind, "title": title, "action": action, "job_title": jobTitle, "read": read, "created_at": created})
 	}
 	hasMore := len(out) > limit
 	if hasMore {
@@ -75,14 +79,67 @@ func (a *App) notificationPath(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
 func (a *App) notify(job, run int64, kind string) {
-	a.DB.Exec(`INSERT OR IGNORE INTO notifications(user_id,job_id,job_run_id,kind,title) SELECT user_id,id,?,?,CASE ? WHEN 'done' THEN 'Job completed: ' ELSE 'Job errored: ' END||task FROM jobs WHERE id=?`, run, kind, kind, job)
+	action := map[string]string{"review": "Ready for review", "done": "Job completed", "error": "Job errored"}[kind]
+	res, err := a.DB.Exec(`INSERT INTO notifications(user_id,job_id,job_run_id,kind,title,action,job_title)
+		SELECT user_id,id,?,?,?,?,title FROM jobs WHERE id=?`, run, kind, action, action, job)
+	if err != nil {
+		return
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return
+	}
+	var workspace int64
+	if a.DB.QueryRow(`SELECT b.workspace_id FROM jobs j JOIN columns c ON c.lane_id=j.lane_id JOIN boards b ON b.id=c.board_id WHERE j.id=?`, job).Scan(&workspace) != nil {
+		return
+	}
+	go func() {
+		_ = a.sendTelegram(workspace, action, a.jobTitle(job), job)
+	}()
+}
+
+func (a *App) jobTitle(job int64) string {
+	var title string
+	_ = a.DB.QueryRow(`SELECT title FROM jobs WHERE id=?`, job).Scan(&title)
+	return title
+}
+
+func (a *App) sendTelegram(workspace int64, action, title string, job int64) error {
+	var chat string
+	var enabled bool
+	if err := a.DB.QueryRow(`SELECT telegram_chat_id,telegram_enabled FROM workspaces WHERE id=?`, workspace).Scan(&chat, &enabled); err != nil {
+		return err
+	}
+	if !enabled || chat == "" || a.TelegramBotToken == "" {
+		return nil
+	}
+	text := "<b>" + html.EscapeString(action) + "</b>\n" + html.EscapeString(title)
+	if a.BaseURL != "" && job != 0 {
+		link := strings.TrimRight(a.BaseURL, "/") + "/?job=" + strconv.FormatInt(job, 10)
+		text += "\n<a href=\"" + html.EscapeString(link) + "\">Open in Paragentix</a>"
+	}
+	body, _ := json.Marshal(map[string]any{"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": true})
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(a.TelegramAPIBase, "/")+"/bot"+a.TelegramBotToken+"/sendMessage", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("Telegram delivery failed")
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("Telegram delivery rejected with status %d", res.StatusCode)
+	}
+	return nil
 }
 func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state string) {
 	if r.Method != "POST" {
 		fail(w, 405, "method not allowed")
 		return
 	}
-	if state != "in_progress" && state != "blocked" && state != "done" {
+	if state != "in_progress" && state != "in_review" && state != "blocked" && state != "done" {
 		fail(w, 409, "job session is not active")
 		return
 	}
@@ -106,7 +163,7 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 		return
 	}
 	x.Comment = appendAttachmentContext(x.Comment, attachments)
-	if state == "done" {
+	if state == "done" || state == "in_review" {
 		var run int64
 		if e := a.DB.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", id).Scan(&run); e != nil {
 			fail(w, 409, "previous session not found")
@@ -130,13 +187,26 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 			fail(w, 500, "could not record comment")
 			return
 		}
-		if e := appendJobEventTx(tx, id, "status", statusContent("done", "todo")); e != nil {
+		if e := appendJobEventTx(tx, id, "status", statusContent(state, "todo")); e != nil {
 			tx.Rollback()
 			fail(w, 500, "could not record status")
 			return
 		}
-		tx.Exec(`UPDATE jobs SET state='todo',position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`, id, x.Comment, id)
-		tx.Commit()
+		res, e := tx.Exec(`UPDATE jobs SET state='todo',position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state=?`, id, x.Comment, id, state)
+		if e != nil {
+			tx.Rollback()
+			fail(w, 500, "could not requeue job")
+			return
+		}
+		if changed, _ := res.RowsAffected(); changed != 1 {
+			tx.Rollback()
+			fail(w, 409, "job state changed")
+			return
+		}
+		if e = tx.Commit(); e != nil {
+			fail(w, 500, "could not requeue job")
+			return
+		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		a.signal()
 		return

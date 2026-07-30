@@ -34,10 +34,10 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
-		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? AND j.archived=0 ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,j.position", l.ID)
+		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? AND j.archived=0 ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 WHEN 'blocked' THEN 2 WHEN 'todo' THEN 3 ELSE 4 END,j.position", l.ID)
 		for jr.Next() {
 			var j Job
-			jr.Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
+			jr.Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
 			j.ConversationProgress = a.conversationProgressForJob(j.ID)
 			l.Jobs = append(l.Jobs, j)
 		}
@@ -114,8 +114,9 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		fail(w, 400, "invalid request")
 		return
 	}
-	if strings.TrimSpace(x.Task) == "" {
-		fail(w, 400, "task required")
+	task := strings.TrimSpace(x.Task)
+	if task == "" || len(task) > 4000 {
+		fail(w, 400, "task must be 1-4000 characters")
 		return
 	}
 	var p int
@@ -130,7 +131,7 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,task,done_definition,warning,position) VALUES(?,?,?,?,?,?)", uid(r), lane, strings.TrimSpace(x.Task), strings.TrimSpace(x.DoneDefinition), warning, p)
+	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position) VALUES(?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, p)
 	if err != nil {
 		fail(w, 500, "could not create job")
 		return
@@ -152,6 +153,15 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 	}
 	jsonOut(w, 201, map[string]any{"id": id, "warning": warning})
 	a.signal()
+}
+
+func fallbackJobTitle(task string) string {
+	title := strings.Join(strings.Fields(task), " ")
+	runes := []rune(title)
+	if len(runes) <= 80 {
+		return title
+	}
+	return strings.TrimSpace(string(runes[:79])) + "…"
 }
 func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
@@ -296,7 +306,7 @@ func statusContent(old, next string) string {
 }
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
-	a.DB.QueryRow("SELECT j.id,j.lane_id,j.task,j.done_definition,j.warning,j.state,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Task, &j.Done, &j.Warning, &j.State, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
+	a.DB.QueryRow("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
 	j.ConversationProgress = a.conversationProgressForJob(id)
 	var sessionID string
 	if err := a.DB.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session<>'job-history' ORDER BY id DESC LIMIT 1", id).Scan(&sessionID); err == nil {
@@ -329,12 +339,13 @@ func (a *App) editJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		fail(w, 409, "field is locked in this state")
 		return
 	}
-	if x.Task != nil && strings.TrimSpace(*x.Task) == "" {
-		fail(w, 400, "task required")
+	if x.Task != nil && (strings.TrimSpace(*x.Task) == "" || len(strings.TrimSpace(*x.Task)) > 4000) {
+		fail(w, 400, "task must be 1-4000 characters")
 		return
 	}
 	if x.Task != nil {
-		a.DB.Exec("UPDATE jobs SET task=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", strings.TrimSpace(*x.Task), id)
+		task := strings.TrimSpace(*x.Task)
+		a.DB.Exec("UPDATE jobs SET task=?,title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", task, fallbackJobTitle(task), id)
 	}
 	if x.DoneDefinition != nil {
 		a.DB.Exec("UPDATE jobs SET done_definition=?,warning='',updated_at=CURRENT_TIMESTAMP WHERE id=?", strings.TrimSpace(*x.DoneDefinition), id)
@@ -382,6 +393,15 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		fail(w, 405, "method not allowed")
 		return
 	}
+	if act == "approve" {
+		_, err := a.approveHermes(id)
+		if err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	if act == "cancel" {
 		if state != "blocked" && state != "in_progress" {
 			fail(w, 409, "cannot cancel")
@@ -403,13 +423,10 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 			fail(w, 409, "job is not blocked")
 			return
 		}
-		if act == "input" || act == "approve" {
+		if act == "input" {
 			var x struct{ Input string }
 			decode(r, &x)
 			text := x.Input
-			if act == "approve" {
-				text = "y"
-			}
 			if text == "" {
 				fail(w, 400, "input required")
 				return

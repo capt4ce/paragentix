@@ -3,29 +3,34 @@ package board
 import (
 	"database/sql"
 	"net/http"
+	"os"
 	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 type App struct {
-	DB        *sql.DB
-	Workspace string
-	secure    bool
-	wake      chan struct{}
-	stop      chan struct{}
-	wg        sync.WaitGroup
-	Mailer    Mailer
-	BaseURL   string
+	DB               *sql.DB
+	Workspace        string
+	secure           bool
+	wake             chan struct{}
+	stop             chan struct{}
+	wg               sync.WaitGroup
+	Mailer           Mailer
+	BaseURL          string
+	TelegramBotToken string
+	TelegramAPIBase  string
 }
 type ctxKey struct{}
 type Job struct {
 	ID                   int64                 `json:"id"`
 	LaneID               int64                 `json:"lane_id"`
+	Title                string                `json:"title"`
 	Task                 string                `json:"task"`
 	Done                 string                `json:"done_definition"`
 	Warning              string                `json:"warning"`
 	State                string                `json:"state"`
+	Phase                string                `json:"phase"`
 	Position             int                   `json:"position"`
 	Attempts             int                   `json:"attempt_count"`
 	Created              string                `json:"created_at"`
@@ -48,7 +53,7 @@ func Open(path, workspace string) (*App, error) {
 		return nil, e
 	}
 	db.SetMaxOpenConns(4)
-	a := &App{DB: db, Workspace: workspace, wake: make(chan struct{}, 1), stop: make(chan struct{})}
+	a := &App{DB: db, Workspace: workspace, wake: make(chan struct{}, 1), stop: make(chan struct{}), TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"), TelegramAPIBase: "https://api.telegram.org", BaseURL: os.Getenv("PARAGENTIX_BASE_URL")}
 	if e = a.migrate(); e != nil {
 		db.Close()
 		return nil, e

@@ -34,7 +34,7 @@ func (a *App) scheduler() {
 	}
 }
 func (a *App) schedule() {
-	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
+	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','in_review','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
 	if e != nil {
 		return
 	}
@@ -51,7 +51,9 @@ func (a *App) schedule() {
 	rows.Close()
 	for _, x := range qs {
 		if x.comment != "" {
-			x.task += "\n\nFollow-up reply:\n" + x.comment
+			if a.resumeHermesFeedback(x.id, x.comment) == nil {
+				continue
+			}
 		}
 		a.start(x.id, x.task, x.done, x.root)
 	}
@@ -133,7 +135,7 @@ func initialHermesPrompt(projectName, projectDirectory, task, done string, attac
 	if len(done) != 0 {
 		doneDefinition = fmt.Sprintf("\n\nDone definition:\n%s", done)
 	}
-	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\n%s%s", projectName, projectDirectory, projectDirectory, task, doneDefinition)
+	prompt := fmt.Sprintf("Unless otherwise specified, this conversation concerns the project %s, located at %s. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with %s as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\nDo not implement the requested work yet. Analyze it, inspect the project as needed, and return a concrete proposal for explicit review and approval.\n\n%s%s", projectName, projectDirectory, projectDirectory, task, doneDefinition)
 	if len(attachmentSets) > 0 && len(attachmentSets[0]) > 0 {
 		prompt = appendAttachmentContext(prompt, attachmentSets[0])
 	}
@@ -142,7 +144,7 @@ func initialHermesPrompt(projectName, projectDirectory, task, done string, attac
 func (a *App) startHermes(id int64, prompt string) {
 	sessionID := token()
 	tx, _ := a.DB.Begin()
-	res, e := tx.Exec("UPDATE jobs SET state='in_progress',pending_comment='',attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", id)
+	res, e := tx.Exec("UPDATE jobs SET state='in_progress',phase='review',pending_comment='',attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", id)
 	if e != nil {
 		tx.Rollback()
 		return
@@ -200,6 +202,79 @@ func (a *App) retryHermes(id int64, state string) error {
 	return nil
 }
 
+func (a *App) resumeHermesFeedback(id int64, feedback string) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var run int64
+	var session string
+	if err = tx.QueryRow("SELECT id,tmux_session FROM job_runs WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1", id).Scan(&run, &session); err != nil {
+		return err
+	}
+	session = strings.TrimPrefix(session, "hermes-api:")
+	res, err := tx.Exec(`UPDATE jobs SET state='in_progress',pending_comment='',warning='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo' AND pending_comment<>''`, id)
+	if err != nil {
+		return err
+	}
+	if changed, _ := res.RowsAffected(); changed != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err = tx.Exec("UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?", run); err != nil {
+		return err
+	}
+	if err = appendJobEventTx(tx, id, "status", statusContent("todo", "in_progress")); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	a.runHermesJob(id, run, session, "Review the following feedback, revise your proposal, and return it for review. Do not implement yet.\n\n"+feedback)
+	return nil
+}
+
+func (a *App) approveHermes(id int64) (bool, error) {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var state, phase, session string
+	var run int64
+	if err = tx.QueryRow(`SELECT j.state,j.phase,r.id,r.tmux_session FROM jobs j JOIN job_runs r ON r.job_id=j.id
+		WHERE j.id=? AND r.id=(SELECT id FROM job_runs WHERE job_id=j.id ORDER BY id DESC LIMIT 1)`, id).Scan(&state, &phase, &run, &session); err != nil {
+		return false, err
+	}
+	if state == "in_progress" && phase == "implementation" {
+		return false, nil
+	}
+	if state != "in_review" || phase != "review" || !strings.HasPrefix(session, "hermes-api:") {
+		return false, fmt.Errorf("job is not awaiting review")
+	}
+	res, err := tx.Exec(`UPDATE jobs SET state='in_progress',phase='implementation',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_review' AND phase='review'`, id)
+	if err != nil {
+		return false, err
+	}
+	if changed, _ := res.RowsAffected(); changed != 1 {
+		return false, fmt.Errorf("review state changed")
+	}
+	if _, err = tx.Exec(`UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?`, run); err != nil {
+		return false, err
+	}
+	if err = appendJobEventTx(tx, id, "status", statusContent("in_review", "in_progress")); err != nil {
+		return false, err
+	}
+	if err = appendJobEventTx(tx, id, "approval", "Implementation approved"); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	a.runHermesJob(id, run, strings.TrimPrefix(session, "hermes-api:"), "The proposal is explicitly approved. Implement it now, verify the work, and report the completed result.")
+	return true, nil
+}
+
 func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
 	a.wg.Add(1)
 	go func() {
@@ -236,17 +311,15 @@ func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
 					return
 				}
 				a.syncHermesIntermediaries(id, run, sessionID, result.output)
-				a.appendJobEvent(id, "reply", result.output)
-				a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", result.output, run)
-				a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", id)
-				a.appendJobEvent(id, "status", statusContent("in_progress", "done"))
-				a.notify(id, run, "done")
+				_ = a.syncHermesTitle(id, sessionID)
+				a.finishHermesRun(id, run, result.output)
 				a.signal()
 				return
 			case <-tick.C:
 				if !a.hermesRunActive(id, run) {
 					return
 				}
+				_ = a.syncHermesTitle(id, sessionID)
 				a.syncHermesIntermediaries(id, run, sessionID, "")
 			}
 		}
@@ -273,11 +346,11 @@ func (a *App) monitor(job, run int64, session string) {
 		}
 		if e != nil {
 			a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", last, run)
-			res, _ := a.DB.Exec("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_progress'", job)
+			res, _ := a.DB.Exec("UPDATE jobs SET state='in_review',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_progress' AND phase='review'", job)
 			if changed, _ := res.RowsAffected(); changed > 0 {
-				a.appendJobEvent(job, "status", statusContent("in_progress", "done"))
+				a.appendJobEvent(job, "status", statusContent("in_progress", "in_review"))
 			}
-			a.notify(job, run, "done")
+			a.notify(job, run, "review")
 			a.signal()
 			return
 		}
@@ -326,8 +399,9 @@ func (a *App) reconcile() {
 
 type hermesSession struct {
 	Session struct {
-		EndedAt   any    `json:"ended_at"`
-		EndReason string `json:"end_reason"`
+		EndedAt   any     `json:"ended_at"`
+		EndReason string  `json:"end_reason"`
+		Title     *string `json:"title"`
 	} `json:"session"`
 }
 type hermesMessages struct {
@@ -391,6 +465,58 @@ func (a *App) syncHermesIntermediaries(job, run int64, sessionID, finalOutput st
 	return a.persistHermesIntermediaries(job, run, messages.Data, finalOutput)
 }
 
+func (a *App) syncHermesTitle(job int64, sessionID string) error {
+	var session hermesSession
+	if err := a.hermesGet(job, "/api/sessions/"+sessionID, &session); err != nil {
+		return err
+	}
+	if session.Session.Title == nil || strings.TrimSpace(*session.Session.Title) == "" {
+		return nil
+	}
+	_, err := a.DB.Exec(`UPDATE jobs SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, strings.TrimSpace(*session.Session.Title), job)
+	return err
+}
+
+func (a *App) finishHermesRun(job, run int64, output string) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var phase, old string
+	if err = tx.QueryRow(`SELECT j.phase,j.state FROM jobs j JOIN job_runs r ON r.job_id=j.id
+		WHERE j.id=? AND r.id=? AND j.state IN('in_progress','blocked') AND r.status IN('running','blocked')
+		AND r.id=(SELECT id FROM job_runs WHERE job_id=j.id ORDER BY id DESC LIMIT 1)`, job, run).Scan(&phase, &old); err != nil {
+		return err
+	}
+	next, kind := "in_review", "review"
+	if phase == "implementation" {
+		next, kind = "done", "done"
+	}
+	if err = appendJobEventTx(tx, job, "reply", output); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=? AND status IN('running','blocked')`, output, run); err != nil {
+		return err
+	}
+	if next == "done" {
+		_, err = tx.Exec(`UPDATE jobs SET state='done',warning='',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state IN('in_progress','blocked') AND phase='implementation'`, job)
+	} else {
+		_, err = tx.Exec(`UPDATE jobs SET state='in_review',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state IN('in_progress','blocked') AND phase='review'`, job)
+	}
+	if err != nil {
+		return err
+	}
+	if err = appendJobEventTx(tx, job, "status", statusContent(old, next)); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	a.notify(job, run, kind)
+	return nil
+}
+
 func (a *App) persistHermesIntermediaries(job, run int64, messages []hermesMessage, finalOutput string) error {
 	intermediaries := normalizeHermesAssistantMessages(messages)
 	if len(intermediaries) == 0 {
@@ -451,19 +577,8 @@ func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
 	_, output := normalizeHermesMessages(messages.Data)
 	if output != "" {
 		_ = a.persistHermesIntermediaries(job, run, messages.Data, output)
-		var count int
-		a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content=?", run, output).Scan(&count)
-		if count == 0 {
-			a.appendJobEvent(job, "reply", output)
-		}
-		a.DB.Exec("UPDATE job_runs SET status='done',ended_at=CURRENT_TIMESTAMP,result_summary=? WHERE id=?", output, run)
-		var old string
-		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&old)
-		res, _ := a.DB.Exec("UPDATE jobs SET state='done',warning='',finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state IN ('blocked','in_progress')", job)
-		if changed, _ := res.RowsAffected(); changed > 0 {
-			a.appendJobEvent(job, "status", statusContent(old, "done"))
-		}
-		a.notify(job, run, "done")
+		_ = a.syncHermesTitle(job, sessionID)
+		_ = a.finishHermesRun(job, run, output)
 		a.signal()
 		return false
 	}

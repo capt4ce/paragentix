@@ -14,11 +14,11 @@ CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NU
 CREATE TABLE IF NOT EXISTS auth_sessions(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,token_hash TEXT UNIQUE NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS user_settings(user_id INTEGER PRIMARY KEY REFERENCES users ON DELETE CASCADE,workspace_root TEXT NOT NULL,hermes_url TEXT NOT NULL DEFAULT '',hermes_api_key TEXT NOT NULL DEFAULT '',hermes_model TEXT NOT NULL DEFAULT 'hermes-agent',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS lanes(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,name TEXT NOT NULL,position INTEGER NOT NULL,paused INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,position));
-CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','blocked','done')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',UNIQUE(lane_id,position));
+CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,title TEXT NOT NULL DEFAULT '',task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','in_review','blocked','done')),phase TEXT NOT NULL DEFAULT 'review' CHECK(phase IN('review','implementation')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',archived INTEGER NOT NULL DEFAULT 0,UNIQUE(lane_id,position));
 CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,attempt INTEGER NOT NULL,tmux_session TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,ended_at TEXT,result_summary TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS job_attachments(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs ON DELETE CASCADE,name TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_id,name));
 CREATE TABLE IF NOT EXISTS job_events(id INTEGER PRIMARY KEY,job_run_id INTEGER NOT NULL REFERENCES job_runs ON DELETE CASCADE,sequence INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,source_message_key TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,sequence));
-CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,job_id INTEGER REFERENCES jobs ON DELETE CASCADE,job_run_id INTEGER REFERENCES job_runs ON DELETE CASCADE,invitation_id INTEGER REFERENCES workspace_invitations ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('done','error','invitation')),title TEXT NOT NULL,read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(job_run_id,kind),UNIQUE(invitation_id,kind));
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,job_id INTEGER REFERENCES jobs ON DELETE CASCADE,job_run_id INTEGER REFERENCES job_runs ON DELETE CASCADE,invitation_id INTEGER REFERENCES workspace_invitations ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('review','done','error','invitation')),title TEXT NOT NULL,action TEXT NOT NULL DEFAULT '',job_title TEXT NOT NULL DEFAULT '',read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(invitation_id,kind));
 CREATE INDEX IF NOT EXISTS notifications_user_id ON notifications(user_id,id DESC);`)
 	if e != nil {
 		return e
@@ -47,6 +47,8 @@ UPDATE workspaces SET hermes_url=COALESCE((SELECT hermes_url FROM user_settings 
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_url TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_api_key TEXT NOT NULL DEFAULT ''`)
 		a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN hermes_model TEXT NOT NULL DEFAULT 'hermes-agent'`)
+		a.DB.Exec(`ALTER TABLE workspaces ADD COLUMN telegram_chat_id TEXT NOT NULL DEFAULT ''`)
+		a.DB.Exec(`ALTER TABLE workspaces ADD COLUMN telegram_enabled INTEGER NOT NULL DEFAULT 0`)
 		if e = a.migrateObsoleteColumns(); e != nil {
 			return e
 		}
@@ -77,7 +79,73 @@ UPDATE workspaces SET hermes_url=COALESCE((SELECT hermes_url FROM user_settings 
 	if e == nil {
 		e = a.migrateConversations()
 	}
+	if e == nil {
+		e = a.migrateJobWorkflow()
+	}
 	return e
+}
+
+func (a *App) migrateJobWorkflow() (err error) {
+	var jobsSchema, notificationSchema string
+	if err = a.DB.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`).Scan(&jobsSchema); err != nil {
+		return err
+	}
+	if err = a.DB.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='notifications'`).Scan(&notificationSchema); err != nil {
+		return err
+	}
+	jobsCurrent := strings.Contains(jobsSchema, "'in_review'") && strings.Contains(jobsSchema, "title TEXT") && strings.Contains(jobsSchema, "phase TEXT")
+	notificationsCurrent := strings.Contains(notificationSchema, "'review'") && strings.Contains(notificationSchema, "job_title TEXT") && strings.Contains(notificationSchema, "action TEXT") && !strings.Contains(notificationSchema, "UNIQUE(job_run_id,kind)")
+	if jobsCurrent && notificationsCurrent {
+		return nil
+	}
+	conn, err := a.DB.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		if _, e := conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err == nil {
+			err = e
+		}
+	}()
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if !jobsCurrent {
+		if _, err = tx.Exec(`CREATE TABLE jobs_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,lane_id INTEGER NOT NULL REFERENCES lanes ON DELETE CASCADE,title TEXT NOT NULL DEFAULT '',task TEXT NOT NULL,done_definition TEXT NOT NULL DEFAULT '',warning TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'todo' CHECK(state IN('todo','in_progress','in_review','blocked','done')),phase TEXT NOT NULL DEFAULT 'review' CHECK(phase IN('review','implementation')),position INTEGER NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at TEXT,finished_at TEXT,pending_comment TEXT NOT NULL DEFAULT '',archived INTEGER NOT NULL DEFAULT 0,UNIQUE(lane_id,position));
+INSERT INTO jobs_new(id,user_id,lane_id,title,task,done_definition,warning,state,phase,position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment,archived)
+SELECT id,user_id,lane_id,substr(trim(replace(replace(task,char(10),' '),char(13),' ')),1,80),task,done_definition,warning,state,'review',position,attempt_count,created_at,updated_at,started_at,finished_at,pending_comment,archived FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_new RENAME TO jobs;`); err != nil {
+			return err
+		}
+	}
+	if !notificationsCurrent {
+		if _, err = tx.Exec(`CREATE TABLE notifications_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,job_id INTEGER REFERENCES jobs ON DELETE CASCADE,job_run_id INTEGER REFERENCES job_runs ON DELETE CASCADE,invitation_id INTEGER REFERENCES workspace_invitations ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN('review','done','error','invitation')),title TEXT NOT NULL,action TEXT NOT NULL DEFAULT '',job_title TEXT NOT NULL DEFAULT '',read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(invitation_id,kind));
+INSERT INTO notifications_new(id,user_id,job_id,job_run_id,invitation_id,kind,title,action,job_title,read,created_at)
+SELECT n.id,n.user_id,n.job_id,n.job_run_id,n.invitation_id,n.kind,n.title,
+CASE n.kind WHEN 'done' THEN 'Job completed' WHEN 'error' THEN 'Job errored' ELSE n.title END,
+COALESCE((SELECT j.title FROM jobs j WHERE j.id=n.job_id),''),
+n.read,n.created_at FROM notifications n;
+DROP TABLE notifications;
+ALTER TABLE notifications_new RENAME TO notifications;
+CREATE INDEX notifications_user_id ON notifications(user_id,id DESC);`); err != nil {
+			return err
+		}
+	}
+	var broken sql.NullString
+	if err = tx.QueryRow(`SELECT group_concat("table"||':'||rowid||':'||parent) FROM pragma_foreign_key_check`).Scan(&broken); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if broken.Valid {
+		return fmt.Errorf("foreign key check failed: %s", broken.String)
+	}
+	return tx.Commit()
 }
 
 func (a *App) migrateConversations() error {

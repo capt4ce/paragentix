@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, JobCard, JobDetailMeta, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 afterEach(cleanup);
@@ -236,6 +236,12 @@ describe("workspace users", () => {
   });
 });
 describe("notification center", () => {
+  it("renders lifecycle action prominently and the job title separately", async () => {
+    const screen = render(createElement(NotificationCenter, { notifications: [{ id: 1, action: "Ready for review", job_title: "Safe job title", created_at: "now" }], unread: 1, more: false, onOpen: () => {}, onMarkRead: () => {}, onLoadMore: () => {} }));
+    fireEvent.pointerDown(screen.getByLabelText("Notifications"));
+    expect(await screen.findByText("Ready for review")).toBeTruthy();
+    expect(screen.getByText("Safe job title")).toBeTruthy();
+  });
   it("offers to mark all notifications read", async () => {
     const onMarkRead = vi.fn();
     const { findByText, getByLabelText, queryByText, unmount } = render(createElement(NotificationCenter, { notifications: [], unread: 0, more: false, onOpen: () => {}, onMarkRead, onLoadMore: () => {} }));
@@ -265,6 +271,53 @@ describe("notification center", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
+describe("approved job workflow UX", () => {
+  it("scopes serializable drafts by user, board, and entry and excludes files", () => {
+    localStorage.clear();
+    const top = jobDraftKey("user@example.com", 3, "top");
+    const column = jobDraftKey("user@example.com", 3, "column:9");
+    expect(top).not.toBe(column);
+    saveJobDraft(top, { task: "top task", doneDefinition: "done", columnId: 7, files: [new File(["x"], "secret.txt")] });
+    saveJobDraft(column, { task: "column task", doneDefinition: "", columnId: 9 });
+    expect(loadJobDraft(top)).toEqual({ task: "top task", doneDefinition: "done", columnId: 7 });
+    expect(loadJobDraft(column)).toEqual({ task: "column task", doneDefinition: "", columnId: 9 });
+    clearJobDraft(top);
+    expect(loadJobDraft(top)).toBeNull();
+    expect(loadJobDraft(column)?.task).toBe("column task");
+  });
+
+  it("prevents only outside dismissal when requested", () => {
+    const close = vi.fn();
+    const screen = render(createElement(DialogShell, { title: "Create job", close, preventOutsideClose: true }, "draft"));
+    fireEvent.pointerDown(document.querySelector("[data-radix-dialog-overlay]")!);
+    expect(close).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("uses persisted title as visible identity while retaining prompt in detail", () => {
+    const html = renderToStaticMarkup(createElement(JobCard, { job: { title: "Hermes title", task: "Private detailed prompt", state: "in_review", creatorName: "A" }, open: () => {}, archive: async () => {} }));
+    expect(html).toContain("Hermes title");
+    expect(html).not.toContain(">Private detailed prompt<");
+    expect(renderToStaticMarkup(createElement(StatusBadge, { state: "in_review" }))).toContain("In review");
+  });
+
+  it("bounds task and reply composers and exposes all timeline navigation controls", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    const css = readFileSync("src/index.css", "utf8");
+    expect(app).toContain('maxLength={4000}');
+    expect(css).toMatch(/job-task-input[^}]*max-height/);
+    const screen = render(createElement(JobTimeline, { state: "in_review", events: [
+      { id: 1, kind: "reply", content: "First" },
+      { id: 2, kind: "comment", content: "Feedback" },
+      { id: 3, kind: "reply", content: "Second" },
+    ] }));
+    for (const label of ["Go to top", "Go to bottom", "Previous reply", "Next reply"]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
   });
 });
 describe("toast feedback", () => {
@@ -372,9 +425,9 @@ describe("board job creation", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     expect(app).toContain('aria-label="create board"');
     expect(app).toContain('title="create board"');
-    expect(app).toMatch(/chooseColumn: true[\s\S]*setDialog\("job"\)/);
+    expect(app).toContain('openJobDialog("top", cols[0]?.id, true)');
     expect(app).toMatch(/form\.chooseColumn && \([\s\S]*?>\s*Column\s*<select/);
-    expect(app).toContain('setForm({ columnId: c.id, task: "", doneDefinition: "" })');
+    expect(app).toContain("openJobDialog(`column:${c.id}`, c.id)");
   });
 });
 describe("job comments", () => {
@@ -643,6 +696,6 @@ describe("mobile board controls", () => {
   });
   it("renders an add-job control in every column", () => {
     expect(app).toContain('className="add"');
-    expect(app).toMatch(/>\s*\+ Add job\s*<\/button>/);
+    expect(app).toMatch(/\+ Add job\s*<\/button>/);
   });
 });

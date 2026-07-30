@@ -195,11 +195,11 @@ func TestRunHermesJobPersistsRepeatedIntermediaryOnceBeforeReply(t *testing.T) {
 		if err = a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state); err != nil {
 			t.Fatal(err)
 		}
-		if state == "done" {
+		if state == "in_review" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("job state=%q, message requests=%d, want done", state, messageRequests.Load())
+			t.Fatalf("job state=%q, message requests=%d, want in_review", state, messageRequests.Load())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -622,6 +622,10 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 			w.Write([]byte(`{"data":[]}`))
 			return
 		}
+		if r.URL.Path == "/api/sessions/latest-session" {
+			w.Write([]byte(`{"session":{"title":null}}`))
+			return
+		}
 		if got := r.Header.Get("X-Hermes-Session-Id"); got != "latest-session" {
 			t.Errorf("session header=%q, want latest-session", got)
 		}
@@ -676,11 +680,11 @@ func TestRetryReusesLatestHermesSessionAndRun(t *testing.T) {
 	for {
 		var state string
 		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state)
-		if state == "done" {
+		if state == "in_review" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("job state=%q, want done", state)
+			t.Fatalf("job state=%q, want in_review", state)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -706,7 +710,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, messages, wantState, wantRun string
 	}{
-		{"completed", `{"object":"list","data":[{"role":"user","content":"work"},{"id":"progress-1","role":"assistant","content":"Inspecting the repository"},{"id":"progress-2","role":"assistant","content":"Running focused tests"},{"id":"final-1","role":"assistant","content":"finished remotely"}]}`, "done", "done"},
+		{"completed", `{"object":"list","data":[{"role":"user","content":"work"},{"id":"progress-1","role":"assistant","content":"Inspecting the repository"},{"id":"progress-2","role":"assistant","content":"Running focused tests"},{"id":"final-1","role":"assistant","content":"finished remotely"}]}`, "in_review", "done"},
 		{"active", `{"object":"list","data":[{"role":"user","content":"work"}]}`, "in_progress", "running"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -758,7 +762,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 			if original != 1 {
 				t.Fatalf("original timeline events=%d", original)
 			}
-			if tc.wantState == "done" {
+			if tc.wantState == "in_review" {
 				var output int
 				a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='reply' AND content='finished remotely'", run).Scan(&output)
 				if output != 1 {
@@ -788,7 +792,7 @@ func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 
 func TestInitialHermesPromptIncludesColumnProject(t *testing.T) {
 	prompt := initialHermesPrompt("Paragentix", "/srv/projects/paragentix", "Fix the scheduler", "Tests pass")
-	want := "Unless otherwise specified, this conversation concerns the project Paragentix, located at /srv/projects/paragentix. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with /srv/projects/paragentix as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\nFix the scheduler\n\nDone definition:\nTests pass"
+	want := "Unless otherwise specified, this conversation concerns the project Paragentix, located at /srv/projects/paragentix. Use this project as the default when creating or modifying jobs. Use the direct terminal tool with /srv/projects/paragentix as the workdir for shell commands; do not wrap terminal in execute_code. Delegated shell work must request terminal explicitly. If an indirect terminal attempt fails, retry with the direct terminal tool before claiming terminal is unavailable.\n\nDo not implement the requested work yet. Analyze it, inspect the project as needed, and return a concrete proposal for explicit review and approval.\n\nFix the scheduler\n\nDone definition:\nTests pass"
 	if prompt != want {
 		t.Fatalf("prompt = %q, want %q", prompt, want)
 	}
