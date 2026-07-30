@@ -7,7 +7,23 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
+import { submitFormShortcut } from "./src/lib/forms";
 afterEach(cleanup);
+describe("form submit shortcut", () => {
+  it.each([{ ctrlKey: true }, { metaKey: true }])("submits for Ctrl/Cmd+Enter", modifier => {
+    const submit = vi.fn((event: Event) => event.preventDefault());
+    const screen = render(createElement("form", { onSubmit: submit, onKeyDown: submitFormShortcut }, createElement("textarea", { "aria-label": "Task" })));
+    fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter", ...modifier });
+    expect(submit).toHaveBeenCalledOnce();
+  });
+  it("does not submit for plain or Shift+Enter", () => {
+    const submit = vi.fn((event: Event) => event.preventDefault());
+    const screen = render(createElement("form", { onSubmit: submit, onKeyDown: submitFormShortcut }, createElement("textarea", { "aria-label": "Task" })));
+    fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter" });
+    fireEvent.keyDown(screen.getByLabelText("Task"), { key: "Enter", shiftKey: true });
+    expect(submit).not.toHaveBeenCalled();
+  });
+});
 describe("Mission Control foundation", () => {
   it("uses the accessible Radix dialog inspector", () => {
     const { getByRole, getByLabelText } = render(createElement(DialogShell, { title: "Inspector", close: vi.fn(), inspector: true }, "detail"));

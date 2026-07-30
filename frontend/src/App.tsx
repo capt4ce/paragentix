@@ -15,6 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ConversationPage, JobConversationProgress } from "@/components/conversations/ConversationPage";
 import { Archive, Copy, Paperclip, Pencil, Plus, Send } from "lucide-react";
+import { submitFormShortcut } from "@/lib/forms";
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
 }
@@ -693,11 +694,14 @@ export function App() {
       setLoadingTab("");
     }
   };
+  const submitting = useRef(false);
   const submit = async () => {
+    if (submitting.current) return;
     if (dialog === "invite" && !invitationEmailValid(form.email || "")) {
       setToast({ message: "Invitation email invalid", type: "error" });
       return;
     }
+    submitting.current = true;
     try {
       if (dialog === "workspace")
         await api("/workspaces", {
@@ -771,6 +775,8 @@ export function App() {
         const detail = e instanceof Error ? e.message : String(e);
         setToast({ message: `Failed to send invitation: ${detail}`, type: "error" });
       } else setError(String(e));
+    } finally {
+      submitting.current = false;
     }
   };
   const route = parseLocation(location.search);
@@ -1320,13 +1326,14 @@ export function App() {
       )}
       {dialog && (
         <DialogShell title={dialog} close={() => setDialog("")} preventOutsideClose={dialog === "job"}>
+          <form onKeyDown={submitFormShortcut} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           {error && <p role="alert">{error}</p>}
           {dialog === "profile" ? (
             <p>{me.email}</p>
           ) : dialog === "remove" ? (
             <>
               <p>Remove {form.email} from this workspace?</p>
-              <AsyncButton onClick={submit}>Confirm removal</AsyncButton>
+              <AsyncButton type="button" onClick={submit}>Confirm removal</AsyncButton>
             </>
           ) : (
             <>
@@ -1462,6 +1469,7 @@ export function App() {
                 </>
               )}
               <AsyncButton
+                type="button"
                 disabled={(dialog === "column" && !form.projectId) || (dialog === "job" && !form.columnId)}
                 onClick={submit}
               >
@@ -1478,6 +1486,7 @@ export function App() {
               )}
             </>
           )}
+          </form>
         </DialogShell>
       )}
       {job && (
