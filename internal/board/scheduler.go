@@ -572,7 +572,7 @@ func (a *App) reconcileHermes(job, run int64, sessionID string) bool {
 	var session hermesSession
 	var messages hermesMessages
 	if a.hermesGet(job, "/api/sessions/"+sessionID, &session) != nil || a.hermesGet(job, "/api/sessions/"+sessionID+"/messages", &messages) != nil {
-		return false
+		return a.hermesRunActive(job, run)
 	}
 	_, output := normalizeHermesMessages(messages.Data)
 	if output != "" {

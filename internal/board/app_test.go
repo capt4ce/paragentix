@@ -1257,6 +1257,54 @@ func TestCommentOnDoneJobRequeuesAtEndOfTodoOrder(t *testing.T) {
 	}
 }
 
+func TestReconcileKeepsWatchingHermesRunAfterTransientAPIFailure(t *testing.T) {
+	var sessionRequests atomic.Int32
+	var a *App
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/sessions/live-session":
+			if sessionRequests.Add(1) == 1 {
+				http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+				return
+			}
+			w.Write([]byte(`{"session":{"id":"live-session","ended_at":null,"end_reason":null}}`))
+		case "/api/sessions/live-session/messages":
+			w.Write([]byte(`{"data":[{"role":"assistant","content":"Implemented after restart"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var err error
+	a, err = Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"reconcile-hermes@example.com","password":"password1"}`)
+	var user, lane int64
+	a.DB.QueryRow("SELECT id FROM users WHERE email='reconcile-hermes@example.com'").Scan(&user)
+	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
+	a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Lane 1',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user)
+	a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user)
+	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,phase,position,attempt_count) VALUES(?,?,'work','in_progress','implementation',0,1)", user, lane)
+	job, _ := res.LastInsertId()
+	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'hermes-api:live-session','running')", job)
+
+	a.reconcile()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state)
+		if state == "done" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("job was abandoned after transient API failure; session requests=%d", sessionRequests.Load())
+}
+
 func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {
