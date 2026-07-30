@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -152,6 +153,101 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		return
 	}
 	jsonOut(w, 201, map[string]any{"id": id, "warning": warning})
+	a.signal()
+}
+
+func (a *App) createBoardJob(w http.ResponseWriter, r *http.Request, board int64) {
+	var x struct {
+		ColumnID, ProjectID  int64
+		Task, DoneDefinition string
+	}
+	var attachments []jobAttachment
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		var parseErr error
+		attachments, parseErr = parseAttachments(w, r)
+		if parseErr != nil {
+			fail(w, 400, parseErr.Error())
+			return
+		}
+		x.Task, x.DoneDefinition = r.FormValue("task"), r.FormValue("doneDefinition")
+		x.ColumnID, _ = strconv.ParseInt(r.FormValue("columnId"), 10, 64)
+		x.ProjectID, _ = strconv.ParseInt(r.FormValue("projectId"), 10, 64)
+	} else if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
+		return
+	}
+	if (x.ColumnID == 0) == (x.ProjectID == 0) {
+		fail(w, 400, "exactly one of columnId or projectId required")
+		return
+	}
+	task := strings.TrimSpace(x.Task)
+	if task == "" || len(task) > 4000 {
+		fail(w, 400, "task must be 1-4000 characters")
+		return
+	}
+	tx, err := a.DB.Begin()
+	if err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
+	defer tx.Rollback()
+	var lane, column int64
+	if x.ColumnID != 0 {
+		if err = tx.QueryRow(`SELECT lane_id FROM columns WHERE id=? AND board_id=? AND archived=0`, x.ColumnID, board).Scan(&lane); err != nil {
+			fail(w, 400, "columnId from this board required")
+			return
+		}
+		column = x.ColumnID
+	} else {
+		var ok int
+		if err = tx.QueryRow(`SELECT 1 FROM projects p JOIN boards b ON b.workspace_id=p.workspace_id WHERE p.id=? AND b.id=?`, x.ProjectID, board).Scan(&ok); err != nil {
+			fail(w, 400, "projectId from this workspace required")
+			return
+		}
+		name := generatedColumnName()
+		var lanePosition, columnPosition int
+		tx.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM lanes WHERE user_id=?`, uid(r)).Scan(&lanePosition)
+		res, e := tx.Exec(`INSERT INTO lanes(user_id,name,position) VALUES(?,?,?)`, uid(r), name, lanePosition)
+		if e != nil {
+			fail(w, 500, "could not create column")
+			return
+		}
+		lane, _ = res.LastInsertId()
+		tx.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM columns WHERE board_id=?`, board).Scan(&columnPosition)
+		res, e = tx.Exec(`INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) VALUES(?,?,?,?,?,?)`, uid(r), board, lane, x.ProjectID, name, columnPosition)
+		if e != nil {
+			fail(w, 500, "could not create column")
+			return
+		}
+		column, _ = res.LastInsertId()
+	}
+	var position int
+	tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=?", lane).Scan(&position)
+	warning := ""
+	if strings.TrimSpace(x.DoneDefinition) == "" {
+		warning = "Completion criteria generation deferred: add criteria manually or run the task as-is."
+	}
+	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position) VALUES(?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, position)
+	if err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
+	job, _ := res.LastInsertId()
+	if _, err = tx.Exec("INSERT INTO job_conversations(job_id,title,status) VALUES(?,'Main','active')", job); err != nil {
+		fail(w, 500, "could not create job conversation")
+		return
+	}
+	for _, attachment := range attachments {
+		if _, err = tx.Exec("INSERT INTO job_attachments(job_id,name,content) VALUES(?,?,?)", job, attachment.Name, attachment.Content); err != nil {
+			fail(w, 500, "could not save attachments")
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		fail(w, 500, "could not create job")
+		return
+	}
+	jsonOut(w, 201, map[string]any{"id": job, "columnId": column, "warning": warning})
 	a.signal()
 }
 

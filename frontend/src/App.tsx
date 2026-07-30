@@ -187,37 +187,41 @@ export function InvitationDialog({ invitation, close, accept }: { invitation: an
     <AsyncButton disabled={accepted} onClick={accept}>{accepted ? "Already accepted" : "Accept invitation"}</AsyncButton>
   </DialogShell>;
 }
-export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[] }): RequestInit {
+export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[]; columnId?: number | string; projectId?: number | string }): RequestInit {
 	validateAttachments(form.files || []);
   if (form.files?.length) {
     const body = new FormData();
     body.set("task", form.task);
     body.set("doneDefinition", form.doneDefinition || "");
+    if (form.columnId) body.set("columnId", String(form.columnId));
+    if (form.projectId) body.set("projectId", String(form.projectId));
     form.files.forEach((file) => body.append("files", file));
     return { method: "POST", body };
   }
   return {
     method: "POST",
-    body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition }),
+    body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition, ...(form.columnId ? { columnId: Number(form.columnId) } : {}), ...(form.projectId ? { projectId: Number(form.projectId) } : {}) }),
   };
 }
 export const jobDraftKey = (user: string | number, board: string | number, entry: string) =>
   `paragentix:job-draft:${encodeURIComponent(String(user))}:${board}:${entry}`;
-export function loadJobDraft(key: string): { task: string; doneDefinition: string; columnId?: number } | null {
+export function loadJobDraft(key: string): { task: string; doneDefinition: string; columnId?: number; projectId?: number; newColumn?: boolean } | null {
   try {
     const value = localStorage.getItem(key);
     if (!value) return null;
     const draft = JSON.parse(value);
     const columnId = Number(draft.columnId);
-    return { task: String(draft.task || ""), doneDefinition: String(draft.doneDefinition || ""), ...(columnId ? { columnId } : {}) };
+    const projectId = Number(draft.projectId);
+    return { task: String(draft.task || ""), doneDefinition: String(draft.doneDefinition || ""), ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), ...(draft.newColumn ? { newColumn: true } : {}) };
   } catch {
     return null;
   }
 }
-export function saveJobDraft(key: string, draft: { task?: string; doneDefinition?: string; columnId?: number | string; files?: File[] }) {
+export function saveJobDraft(key: string, draft: { task?: string; doneDefinition?: string; columnId?: number | string; projectId?: number | string; newColumn?: boolean; files?: File[] }) {
   try {
     const columnId = Number(draft.columnId);
-    const serializable = { task: draft.task || "", doneDefinition: draft.doneDefinition || "", ...(columnId ? { columnId } : {}) };
+    const projectId = Number(draft.projectId);
+    const serializable = { task: draft.task || "", doneDefinition: draft.doneDefinition || "", ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), newColumn: !!draft.newColumn };
     if (serializable.task || serializable.doneDefinition) localStorage.setItem(key, JSON.stringify(serializable));
     else localStorage.removeItem(key);
   } catch {}
@@ -549,10 +553,11 @@ export function App() {
     void draftVersion;
     return !!loadJobDraft(draftKeyFor(entry));
   };
-  const openJobDialog = (entry: string, columnId: number, chooseColumn = false) => {
+  const openJobDialog = async (entry: string, columnId?: number, chooseColumn = false) => {
     const draft = loadJobDraft(draftKeyFor(entry));
+    const projects = chooseColumn ? await api(`/workspaces/${board.workspaceId}/projects`) : [];
     setDraftEntry(entry);
-    setForm({ columnId: draft?.columnId || columnId, chooseColumn, task: draft?.task || "", doneDefinition: draft?.doneDefinition || "" });
+    setForm({ columnId: chooseColumn && !draft?.columnId ? "" : draft?.columnId || columnId, projectId: draft?.projectId || projects[0]?.id, newColumn: chooseColumn ? !draft?.columnId : false, projects, chooseColumn, task: draft?.task || "", doneDefinition: draft?.doneDefinition || "" });
     setDialog("job");
   };
   const updateJobForm = (patch: Record<string, unknown>) => {
@@ -743,8 +748,8 @@ export function App() {
           }),
         });
       if (dialog === "job")
-        await api(`/columns/${form.columnId}/jobs`, {
-          ...jobCreationRequest(form),
+        await api(form.chooseColumn ? `/boards/${board.id}/jobs` : `/columns/${form.columnId}/jobs`, {
+          ...jobCreationRequest(form.chooseColumn ? { ...form, columnId: form.newColumn ? undefined : form.columnId, projectId: form.newColumn ? form.projectId : undefined } : form),
         });
       if (dialog === "edit column")
         await api(`/columns/${form.id}`, {
@@ -842,9 +847,8 @@ export function App() {
                 </button>
               </div>
               <button
-                disabled={!cols.length}
                 onClick={() => {
-                  openJobDialog("top", cols[0]?.id, true);
+                  void openJobDialog("top", undefined, true);
                 }}
               >
                 Create job {hasDraft("top") && <span className="draft-indicator">Draft</span>}
@@ -1357,11 +1361,20 @@ export function App() {
                       Column
                       <select
                         required
-                        value={form.columnId || ""}
-                        onChange={(e) => updateJobForm({ columnId: e.target.value })}
+                        value={form.newColumn ? "new" : form.columnId || ""}
+                        onChange={(e) => updateJobForm(e.target.value === "new" ? { newColumn: true, columnId: "" } : { newColumn: false, columnId: e.target.value })}
                       >
-                        <option value="">Select…</option>
+                        <option value="new">&lt;New Column&gt;</option>
                         {cols.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {form.chooseColumn && form.newColumn && (
+                    <label>
+                      Projects
+                      <select required value={form.projectId || ""} onChange={(e) => updateJobForm({ projectId: e.target.value })}>
+                        <option value="">Select…</option>
+                        {form.projects?.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </label>
                   )}
@@ -1471,7 +1484,7 @@ export function App() {
               )}
               <AsyncButton
                 type="button"
-                disabled={(dialog === "column" && !form.projectId) || (dialog === "job" && !form.columnId)}
+                disabled={(dialog === "column" && !form.projectId) || (dialog === "job" && (form.newColumn ? !form.projectId : !form.columnId))}
                 onClick={submit}
               >
                 Save

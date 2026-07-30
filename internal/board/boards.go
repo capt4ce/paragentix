@@ -58,6 +58,10 @@ func (a *App) boardPath(w http.ResponseWriter, r *http.Request) {
 		a.columns(w, r, id)
 		return
 	}
+	if strings.HasSuffix(rest, "/jobs") && r.Method == "POST" {
+		a.createBoardJob(w, r, id)
+		return
+	}
 	switch r.Method {
 	case "DELETE":
 		if role != "owner" {

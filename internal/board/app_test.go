@@ -225,6 +225,40 @@ func TestRunHermesJobPersistsRepeatedIntermediaryOnceBeforeReply(t *testing.T) {
 	}
 }
 
+func TestCreateBoardJobCreatesColumnAtomically(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"atomic@example.com","password":"password1"}`)
+	var boardID, projectID int64
+	if err = a.DB.QueryRow(`SELECT b.id,p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=(SELECT id FROM users WHERE email=?)`, "atomic@example.com").Scan(&boardID, &projectID); err != nil {
+		t.Fatal(err)
+	}
+
+	w, _ := req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/jobs", `{"projectId":`+itoa(projectID)+`,"task":"Parallel work","doneDefinition":"Verified"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create board job: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	columnID := int64(out["columnId"].(float64))
+	var count int
+	if err = a.DB.QueryRow(`SELECT count(*) FROM jobs j JOIN columns c ON c.lane_id=j.lane_id WHERE c.id=? AND c.project_id=? AND j.task='Parallel work'`, columnID, projectID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("created graph count=%d err=%v", count, err)
+	}
+
+	w, _ = req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/jobs", `{"projectId":999999,"task":"Must rollback"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid project: %d %s", w.Code, w.Body.String())
+	}
+	if err = a.DB.QueryRow(`SELECT count(*) FROM jobs WHERE task='Must rollback'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial job count=%d err=%v", count, err)
+	}
+}
+
 func TestCreateJobWithAttachmentsPersistsPromptContext(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {

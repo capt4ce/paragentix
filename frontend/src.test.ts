@@ -443,8 +443,10 @@ describe("board job creation", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     expect(app).toContain('aria-label="create board"');
     expect(app).toContain('title="create board"');
-    expect(app).toContain('openJobDialog("top", cols[0]?.id, true)');
+    expect(app).toContain('openJobDialog("top", undefined, true)');
     expect(app).toMatch(/form\.chooseColumn && \([\s\S]*?>\s*Column\s*<select/);
+    expect(app).toContain('&lt;New Column&gt;');
+    expect(app).toMatch(/form\.chooseColumn && form\.newColumn && \([\s\S]*?>\s*Projects\s*<select/);
     expect(app).toContain("openJobDialog(`column:${c.id}`, c.id)");
   });
 });
