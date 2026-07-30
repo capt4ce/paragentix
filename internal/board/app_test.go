@@ -1335,6 +1335,85 @@ func TestReconcileKeepsWatchingHermesRunAfterTransientAPIFailure(t *testing.T) {
 	t.Fatalf("job was abandoned after transient API failure; session requests=%d", sessionRequests.Load())
 }
 
+func TestOpenReconcilesCompletedImplementationHermesRunAfterTransientFailure(t *testing.T) {
+	var sessionRequests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/sessions/restarted-session":
+			if sessionRequests.Add(1) == 1 {
+				http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+				return
+			}
+			w.Write([]byte(`{"session":{"id":"restarted-session","ended_at":"2026-07-30T14:00:00Z","end_reason":"completed"}}`))
+		case "/api/sessions/restarted-session/messages":
+			w.Write([]byte(`{"data":[{"id":87591,"role":"assistant","content":"Implemented and pushed commit 93e0e9b"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "db")
+	a, err := Open(dbPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"startup-reconcile@example.com","password":"password1"}`)
+	var user, lane int64
+	if err = a.DB.QueryRow("SELECT id FROM users WHERE email='startup-reconcile@example.com'").Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Lane 1',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,phase,position,attempt_count) VALUES(?,?,'work','in_progress','implementation',0,1)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	if _, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status) VALUES(?,1,'hermes-api:restarted-session','running')", job); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+
+	a, err = Open(dbPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var state, runStatus, summary string
+		var attempts, runs, replies int
+		if err = a.DB.QueryRow("SELECT state,attempt_count FROM jobs WHERE id=?", job).Scan(&state, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		if err = a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE job_id=?", job).Scan(&runStatus, &summary); err != nil {
+			t.Fatal(err)
+		}
+		if err = a.DB.QueryRow("SELECT count(*) FROM job_runs WHERE job_id=?", job).Scan(&runs); err != nil {
+			t.Fatal(err)
+		}
+		if err = a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=(SELECT id FROM job_runs WHERE job_id=?) AND kind='reply'", job).Scan(&replies); err != nil {
+			t.Fatal(err)
+		}
+		if state == "done" {
+			if runStatus != "done" || summary != "Implemented and pushed commit 93e0e9b" || attempts != 1 || runs != 1 || replies != 1 {
+				t.Fatalf("state=%q run=%q summary=%q attempts=%d runs=%d replies=%d", state, runStatus, summary, attempts, runs, replies)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("startup reconciliation did not finish completed Hermes run; session requests=%d", sessionRequests.Load())
+}
+
 func TestReconcileBlocksRunningRunWithoutTmuxSession(t *testing.T) {
 	a, e := Open(t.TempDir()+"/db", t.TempDir())
 	if e != nil {

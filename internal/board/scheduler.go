@@ -410,10 +410,33 @@ type hermesSession struct {
 type hermesMessages struct {
 	Data []hermesMessage `json:"data"`
 }
+type hermesMessageID string
+
+func (id *hermesMessageID) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*id = ""
+		return nil
+	}
+	if len(data) > 0 && data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		*id = hermesMessageID(value)
+		return nil
+	}
+	var value json.Number
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*id = hermesMessageID(value.String())
+	return nil
+}
+
 type hermesMessage struct {
-	ID      string `json:"id"`
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	ID      hermesMessageID `json:"id"`
+	Role    string          `json:"role"`
+	Content any             `json:"content"`
 }
 type normalizedHermesMessage struct {
 	SourceKey string
@@ -443,7 +466,7 @@ func normalizeHermesAssistantMessages(messages []hermesMessage) []normalizedHerm
 		if content == "" {
 			continue
 		}
-		sourceKey := message.ID
+		sourceKey := string(message.ID)
 		if sourceKey == "" {
 			sourceKey = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", message.Role, index, content))))
 		}
