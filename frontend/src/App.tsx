@@ -135,6 +135,12 @@ export function JobTimeline({ events = [], state }: { events?: any[]; state: str
           </details>
         );
       }) : <p>No output yet</p>}
+      {state === "todo" && (
+        <div className="queued-indicator" role="status" aria-live="polite">
+          <span className="queued-dot" aria-hidden="true" />
+          <span>Job queued</span>
+        </div>
+      )}
       {state === "in_progress" && (
         <div className="processing-indicator" role="status" aria-live="polite">
           <span className="processing-dots" aria-hidden="true"><i /><i /><i /></span>

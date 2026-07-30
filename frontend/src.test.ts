@@ -758,7 +758,16 @@ describe("chat conversations", () => {
     expect(status.querySelector(".processing-dots")?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  it.each(["todo", "blocked", "done"])("does not show processing for %s jobs", (state) => {
+  it("shows an accessible static queued indicator for todo jobs", () => {
+    const { container, getByRole } = render(createElement(JobTimeline, { state: "todo", events: [] }));
+    const status = getByRole("status");
+    expect(status.textContent).toContain("Job queued");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status).toBe(container.querySelector(".queued-indicator"));
+    expect(status.querySelector(".processing-dots")).toBeNull();
+  });
+
+  it.each(["in_review", "blocked", "done"])("does not show queued or processing status for %s jobs", (state) => {
     const { queryByRole } = render(createElement(JobTimeline, { state, events: [] }));
     expect(queryByRole("status")).toBeNull();
   });
