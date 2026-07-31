@@ -160,7 +160,7 @@ export const canComment = (state: string) =>
 export const canEditDoneDefinition = (job: any) =>
   job.state === "todo" && job.attempt_count === 0;
 export const jobDetail = (x: any) => x.job
-  ? { ...x.job, events: x.events, session_id: x.session_id }
+  ? { ...x.job, events: x.events ?? [], session_id: x.session_id }
   : x;
 export const columnPatch = (form: any) => ({
   name: form.name,

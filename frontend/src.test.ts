@@ -610,6 +610,17 @@ describe("job comments", () => {
       session_id: "session-123",
     });
   });
+  it.each([null, undefined])("normalizes %s job detail events before rendering", async (events) => {
+    const { jobDetail } = await import("./src");
+    const detail = jobDetail({
+      job: { state: "todo", task: "Queued work" },
+      events,
+    });
+
+    expect(detail.events).toEqual([]);
+    const view = render(createElement(JobTimeline, { state: detail.state, events: detail.events }));
+    expect(view.getByRole("status").textContent).toContain("Job queued");
+  });
 });
 describe("job detail session", () => {
   it.each([

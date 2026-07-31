@@ -411,7 +411,7 @@ func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	if err := a.DB.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session<>'job-history' ORDER BY id DESC LIMIT 1", id).Scan(&sessionID); err == nil {
 		sessionID = strings.TrimPrefix(sessionID, "hermes-api:")
 	}
-	var ev []map[string]any
+	ev := []map[string]any{}
 	rows, _ := a.DB.Query(`SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at
 		FROM job_events e JOIN job_runs r ON r.id=e.job_run_id
 		LEFT JOIN job_conversations c ON c.id=e.conversation_id
