@@ -351,6 +351,14 @@ export function DoneDefinitionField({ job, value, onChange }: { job: any; value:
     </section>
   );
 }
+export function JobTask({ task }: { task: string }) {
+  return (
+    <section className="job-inspector-section">
+      <h3>Task</h3>
+      <p><TimelineContent content={task} /></p>
+    </section>
+  );
+}
 function JobDetail({
   job,
   close,
@@ -399,10 +407,7 @@ function JobDetail({
         <JobDetailMeta job={j} notify={notify} />
       </div>
       <div className="job-inspector-work">
-      <section className="job-inspector-section">
-        <h3>Task</h3>
-        <p>{j.task}</p>
-      </section>
+      <JobTask task={j.task} />
       <DoneDefinitionField job={j} value={done} onChange={setDone} />
       {canEditDoneDefinition(j) && (
         <AsyncButton

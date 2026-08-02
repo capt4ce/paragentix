@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, JobTask, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
@@ -624,6 +624,28 @@ describe("job comments", () => {
   });
 });
 describe("job detail session", () => {
+  it("renders a plain HTTPS URL in Task as a safe anchor without losing surrounding text", () => {
+    const task = "Review https://example.test/spec before implementation.";
+    const { container, getByRole } = render(createElement(JobTask, { task }));
+    const link = getByRole("link", { name: "https://example.test/spec" });
+
+    expect(link.getAttribute("href")).toBe("https://example.test/spec");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(container.querySelector("p")?.textContent).toBe(task);
+  });
+
+  it("renders a Markdown link in Task as a safe anchor without losing surrounding text", () => {
+    const task = "Review the [implementation notes](https://example.test/notes) before approval.";
+    const { container, getByRole } = render(createElement(JobTask, { task }));
+    const link = getByRole("link", { name: "implementation notes" });
+
+    expect(link.getAttribute("href")).toBe("https://example.test/notes");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(container.querySelector("p")?.textContent).toBe("Review the implementation notes before approval.");
+  });
+
   it.each([
     ["todo", 0, true],
     ["todo", 1, false],
