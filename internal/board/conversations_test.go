@@ -601,12 +601,12 @@ func TestMergeUsesDirectParentAndProtectsStaleAndDuplicateConfirmation(t *testin
 		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
 	}
 	var preview struct {
-		Watermark int64    `json:"watermark"`
-		Points    []string `json:"points"`
+		Watermark int64  `json:"watermark"`
+		Summary   string `json:"summary"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &preview)
-	if len(preview.Points) == 0 {
-		t.Fatal("preview omitted important points")
+	if !strings.Contains(preview.Summary, "Nested insight") {
+		t.Fatalf("preview omitted conversation summary: %q", preview.Summary)
 	}
 	tx, err := a.DB.Begin()
 	if err == nil {
@@ -619,7 +619,12 @@ func TestMergeUsesDirectParentAndProtectsStaleAndDuplicateConfirmation(t *testin
 		t.Fatalf("newer point: %v", err)
 	}
 	a.DB.Exec(`UPDATE job_conversations SET status='ready_to_merge' WHERE id=?`, grandchildID)
-	mergeBody := `{"points":["Reviewed nested point"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-1"}`
+	legacyBody := `{"points":["Reviewed nested point"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"legacy-contract"}`
+	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", legacyBody)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("legacy points contract=%d %s", w.Code, w.Body.String())
+	}
+	mergeBody := `{"summary":"Reviewed nested point","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-1"}`
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", mergeBody)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("stale merge=%d %s", w.Code, w.Body.String())
@@ -627,31 +632,58 @@ func TestMergeUsesDirectParentAndProtectsStaleAndDuplicateConfirmation(t *testin
 
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge-preview", `{}`)
 	json.Unmarshal(w.Body.Bytes(), &preview)
-	mergeBody = `{"points":["Reviewed nested point"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-2"}`
+	mergeBody = `{"summary":"Reviewed nested point","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-2"}`
 	a.DB.Exec(`UPDATE job_conversations SET status='merged' WHERE id=?`, childID)
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", mergeBody)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("merge: %d %s", w.Code, w.Body.String())
 	}
 	first := w.Body.String()
+	if !strings.Contains(first, `"summary":"Reviewed nested point"`) || strings.Contains(first, `"points"`) {
+		t.Fatalf("merge response did not use summary contract: %s", first)
+	}
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", mergeBody)
 	if w.Code != http.StatusOK || w.Body.String() != first {
 		t.Fatalf("idempotent merge: %d first=%s duplicate=%s", w.Code, first, w.Body.String())
 	}
-	differentBody := `{"points":["Different reviewed point"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-2"}`
+	differentBody := `{"summary":"Different reviewed point","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-2"}`
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", differentBody)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("reused idempotency key with different payload=%d %s", w.Code, w.Body.String())
 	}
-	newKeySameMerge := `{"points":["Reviewed nested point"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-3"}`
+	newKeySameMerge := `{"summary":"Reviewed nested point","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-3"}`
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", newKeySameMerge)
 	if w.Code != http.StatusOK || w.Body.String() != first {
 		t.Fatalf("same watermark duplicate: %d first=%s duplicate=%s", w.Code, first, w.Body.String())
 	}
-	newKeyDifferentMerge := `{"points":["Changed after confirmation"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-4"}`
+	newKeyDifferentMerge := `{"summary":"Changed after confirmation","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"merge-4"}`
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge", newKeyDifferentMerge)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("same watermark with different content=%d %s", w.Code, w.Body.String())
+	}
+	tx, err = a.DB.Begin()
+	if err == nil {
+		err = appendConversationEventTx(tx, jobID, grandchildID, "comment", "Delta only insight")
+	}
+	if err == nil {
+		_, err = tx.Exec(`UPDATE job_conversations SET status='ready_to_merge' WHERE id=?`, grandchildID)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		t.Fatalf("new merge delta: %v", err)
+	}
+	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(grandchildID)+"/merge-preview", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delta preview: %d %s", w.Code, w.Body.String())
+	}
+	var deltaPreview struct {
+		Summary string `json:"summary"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &deltaPreview)
+	if deltaPreview.Summary != "Delta only insight" {
+		t.Fatalf("preview was not limited to delta since previous merge: %q", deltaPreview.Summary)
 	}
 	var targetID int64
 	var parentStatus string
@@ -696,7 +728,7 @@ func TestMergeDetectsAnEventRacingAfterThePreviewCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"points":["Reviewed"],"previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"race"}`
+	body := `{"summary":"Reviewed","previewWatermark":` + itoa(preview.Watermark) + `,"idempotencyKey":"race"}`
 	w, _ = req(t, h, cookie, "POST", "/api/conversations/"+itoa(childID)+"/merge", body)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("racing merge=%d %s", w.Code, w.Body.String())
@@ -706,6 +738,15 @@ func TestMergeDetectsAnEventRacingAfterThePreviewCheck(t *testing.T) {
 	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE conversation_id=? AND content='racing point'`, childID).Scan(&racingEvents)
 	if merges != 0 || racingEvents != 0 {
 		t.Fatalf("racing merge was not atomic: merges=%d racingEvents=%d", merges, racingEvents)
+	}
+}
+
+func TestApprovedMergeSummaryReadsCurrentAndLegacyStorage(t *testing.T) {
+	if got := approvedMergeSummary(`"Current summary"`); got != "Current summary" {
+		t.Fatalf("current summary=%q", got)
+	}
+	if got := approvedMergeSummary(`["First point","Second point"]`); got != "First point\n\nSecond point" {
+		t.Fatalf("legacy summary=%q", got)
 	}
 }
 

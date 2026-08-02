@@ -208,13 +208,37 @@ describe("conversation branching", () => {
     expect(page).toMatch(/popup\.location\.href = conversationLocation\(jobId, conversationId\)/);
   });
 
-  it("supports editable important points in merge review", async () => {
+  it("supports one editable conversation summary in merge review", async () => {
     const confirm = vi.fn(async () => {});
-    const screen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), points: ["First", "Second"], onConfirm: confirm }));
-    fireEvent.change(screen.getByLabelText("Important point 1"), { target: { value: "Edited" } });
-    fireEvent.click(screen.getByRole("button", { name: "Remove important point 2" }));
+    const screen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), summary: "First\n\nSecond", onConfirm: confirm }));
+    expect(screen.baseElement.querySelectorAll("textarea")).toHaveLength(1);
+    expect((screen.getByLabelText("Conversation summary") as HTMLTextAreaElement).value).toBe("First\n\nSecond");
+    fireEvent.change(screen.getByLabelText("Conversation summary"), { target: { value: "Edited summary" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
-    await waitFor(() => expect(confirm).toHaveBeenCalledWith(["Edited"]));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith("Edited summary"));
+  });
+
+  it("renders merged content as one summary block", () => {
+    const screen = render(createElement(ConversationBubble, {
+      event: {
+        id: 12,
+        kind: "merge",
+        content: JSON.stringify({ sourceTitle: "Research", author: "user@example.com", createdAt: "today", summary: "One cohesive summary" }),
+      },
+      onFork: vi.fn(),
+    }));
+    expect(screen.getByText("One cohesive summary").classList.contains("merge-summary")).toBe(true);
+    expect(screen.container.querySelector("ul")).toBeNull();
+    screen.rerender(createElement(ConversationBubble, {
+      event: {
+        id: 11,
+        kind: "merge",
+        content: JSON.stringify({ sourceTitle: "Legacy research", author: "user@example.com", createdAt: "yesterday", points: ["First point", "Second point"] }),
+      },
+      onFork: vi.fn(),
+    }));
+    expect(screen.container.querySelector(".merge-summary")?.textContent).toBe("First point\n\nSecond point");
+    expect(screen.container.querySelector("ul")).toBeNull();
   });
 
   it("keeps the inspector timeline and adds the new-tab link above it", () => {
@@ -260,7 +284,7 @@ describe("approved job-detail UI consistency", () => {
 
     let finishMerge!: () => void;
     const confirm = vi.fn(() => new Promise<void>((resolve) => { finishMerge = resolve; }));
-    const mergeScreen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), points: ["Keep this"], onConfirm: confirm }));
+    const mergeScreen = render(createElement(MergeReviewDialog, { open: true, onOpenChange: vi.fn(), summary: "Keep this", onConfirm: confirm }));
     expect(mergeScreen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     fireEvent.click(mergeScreen.getByRole("button", { name: "Confirm merge" }));
     expect(mergeScreen.getByRole("button", { name: "Merging" }).getAttribute("aria-busy")).toBe("true");

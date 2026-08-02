@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Menu, Minus, MoreHorizontal, Paperclip, Plus, Send } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Menu, Minus, MoreHorizontal, Paperclip, Plus, Send } from "lucide-react";
 
 export type ConversationRecord = {
   id: number;
@@ -270,28 +270,22 @@ export function CreateBranchesDialog({
 export function MergeReviewDialog({
   open,
   onOpenChange,
-  points,
+  summary,
   onConfirm,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  points: string[];
-  onConfirm: (points: string[]) => Promise<void>;
+  summary: string;
+  onConfirm: (summary: string) => Promise<void>;
 }) {
-  const [edited, setEdited] = useState(points);
+  const [edited, setEdited] = useState(summary);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (open) { setEdited(points.length ? points : [""]); setError(""); } }, [open, points]);
-  const move = (index: number, offset: number) => {
-    const next = [...edited];
-    const [point] = next.splice(index, 1);
-    next.splice(index + offset, 0, point);
-    setEdited(next);
-  };
+  useEffect(() => { if (open) { setEdited(summary); setError(""); } }, [open, summary]);
   const merge = async () => {
-    const approved = edited.map((point) => point.trim()).filter(Boolean);
-    if (!approved.length) {
-      setError("Keep at least one important point.");
+    const approved = edited.trim();
+    if (!approved) {
+      setError("Keep a conversation summary.");
       return;
     }
     setSaving(true);
@@ -310,7 +304,7 @@ export function MergeReviewDialog({
       open={open}
       close={() => onOpenChange(false)}
       title="Merge back to parent"
-      description="Review the important points that will be appended to the direct parent."
+      description="Review the conversation summary that will be appended to the direct parent."
       error={error}
       footer={<>
         <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -319,21 +313,9 @@ export function MergeReviewDialog({
         </Button>
       </>}
     >
-      <div className="merge-points">
-        {edited.map((point, index) => (
-          <div key={index} className="merge-point">
-            <label>Important point {index + 1}
-              <textarea aria-label={`Important point ${index + 1}`} maxLength={1000} value={point} onChange={(event) => setEdited(edited.map((value, i) => i === index ? event.target.value : value))} />
-            </label>
-            <span>
-              <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} up`} disabled={saving || index === 0} onClick={() => move(index, -1)}><ChevronUp /></Button>
-              <Button type="button" variant="outline" size="icon" aria-label={`Move important point ${index + 1} down`} disabled={saving || index === edited.length - 1} onClick={() => move(index, 1)}><ChevronDown /></Button>
-              <Button type="button" variant="outline" size="icon" aria-label={`Remove important point ${index + 1}`} disabled={saving} onClick={() => setEdited(edited.filter((_, i) => i !== index))}><Minus /></Button>
-            </span>
-          </div>
-        ))}
-        <Button type="button" variant="outline" disabled={saving} onClick={() => setEdited([...edited, ""])}><Plus /> Add point</Button>
-      </div>
+      <label className="merge-summary-field">Conversation summary
+        <textarea aria-label="Conversation summary" maxLength={20000} value={edited} onChange={(event) => setEdited(event.target.value)} />
+      </label>
     </DialogShell>
   );
 }
@@ -343,7 +325,8 @@ export function ConversationBubble({ event, onFork, readOnly = false }: { event:
   if (event.kind === "merge") {
     let card: any;
     try { card = JSON.parse(event.content); } catch { card = undefined; }
-    if (card) return <article className="merge-card"><b>Merged from {card.sourceTitle}</b><small>{card.author} · {card.createdAt}</small><ul>{card.points.map((point: string) => <li key={point}>{point}</li>)}</ul></article>;
+    const summary = typeof card?.summary === "string" ? card.summary : Array.isArray(card?.points) ? card.points.join("\n\n") : "";
+    if (card) return <article className="merge-card"><b>Merged from {card.sourceTitle}</b><small>{card.author} · {card.createdAt}</small><p className="merge-summary">{summary}</p></article>;
   }
   const conversational = ["comment", "input", "reply", "output"].includes(event.kind);
   return (
@@ -372,7 +355,7 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
   const [treeCollapsed, setTreeCollapsed] = useState(false);
   const [mobileTree, setMobileTree] = useState(false);
   const [forkPoint, setForkPoint] = useState<{ conversationId: number; eventId: number }>();
-  const [mergePreview, setMergePreview] = useState<{ sourceConversationId: number; watermark: number; points: string[] }>();
+  const [mergePreview, setMergePreview] = useState<{ sourceConversationId: number; watermark: number; summary: string }>();
   const [reply, setReply] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState("");
@@ -495,10 +478,10 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
           throw failure;
         }
       }} />
-      <MergeReviewDialog open={!!mergePreview} onOpenChange={(open) => { if (!open) setMergePreview(undefined); }} points={mergePreview?.points ?? []} onConfirm={async (points) => {
+      <MergeReviewDialog open={!!mergePreview} onOpenChange={(open) => { if (!open) setMergePreview(undefined); }} summary={mergePreview?.summary ?? ""} onConfirm={async (summary) => {
         await api(`/conversations/${mergePreview!.sourceConversationId}/merge`, {
           method: "POST",
-          body: JSON.stringify({ points, previewWatermark: mergePreview!.watermark, idempotencyKey: `${mergePreview!.sourceConversationId}-${mergePreview!.watermark}-${Date.now()}` }),
+          body: JSON.stringify({ summary, previewWatermark: mergePreview!.watermark, idempotencyKey: `${mergePreview!.sourceConversationId}-${mergePreview!.watermark}-${Date.now()}` }),
         });
         await loadTree();
       }} />

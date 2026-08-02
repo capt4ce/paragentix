@@ -20,6 +20,7 @@ import (
 
 const maxForksPerBatch = 10
 const maxMergePointBytes = 1000
+const maxMergeSummaryBytes = 20000
 const conversationCompletionAttempts = 3
 
 var errConversationCompletionStale = errors.New("conversation completion is no longer current")
@@ -700,19 +701,27 @@ func (a *App) mergePreview(w http.ResponseWriter, sourceID int64) {
 		return
 	}
 	defer rows.Close()
-	points := []string{}
+	parts := []string{}
 	for rows.Next() {
 		var point string
 		rows.Scan(&point)
 		if point = mergePreviewPoint(point); point != "" {
-			points = append(points, point)
+			parts = append(parts, point)
 		}
 	}
-	if len(points) == 0 {
-		fail(w, http.StatusConflict, "conversation has no new points to merge")
+	summary := strings.Join(parts, "\n\n")
+	if len(summary) > maxMergeSummaryBytes {
+		summary = summary[:maxMergeSummaryBytes]
+		for len(summary) > 0 && !utf8.ValidString(summary) {
+			summary = summary[:len(summary)-1]
+		}
+		summary = strings.TrimSpace(summary)
+	}
+	if summary == "" {
+		fail(w, http.StatusConflict, "conversation has no new content to merge")
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"sourceConversationId": sourceID, "targetConversationId": parentID, "watermark": watermark, "points": points})
+	jsonOut(w, http.StatusOK, map[string]any{"sourceConversationId": sourceID, "targetConversationId": parentID, "watermark": watermark, "summary": summary})
 }
 
 func mergePreviewPoint(content string) string {
@@ -732,29 +741,27 @@ func mergePreviewPoint(content string) string {
 
 func (a *App) mergeConversation(w http.ResponseWriter, r *http.Request, sourceID, jobID int64) {
 	var input struct {
-		Points           []string `json:"points"`
-		PreviewWatermark int64    `json:"previewWatermark"`
-		IdempotencyKey   string   `json:"idempotencyKey"`
+		Summary          string `json:"summary"`
+		PreviewWatermark int64  `json:"previewWatermark"`
+		IdempotencyKey   string `json:"idempotencyKey"`
 	}
 	if decode(r, &input) != nil {
 		fail(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
-	if input.IdempotencyKey == "" || len(input.Points) < 1 || len(input.Points) > 20 {
-		fail(w, http.StatusBadRequest, "provide 1-20 points and an idempotency key")
+	input.Summary = strings.TrimSpace(input.Summary)
+	if input.IdempotencyKey == "" || input.Summary == "" {
+		fail(w, http.StatusBadRequest, "provide a summary and an idempotency key")
 		return
 	}
-	for i, point := range input.Points {
-		input.Points[i] = strings.TrimSpace(point)
-		if input.Points[i] == "" || len(input.Points[i]) > 1000 {
-			fail(w, http.StatusBadRequest, "each point must be 1-1000 characters")
-			return
-		}
+	if len(input.Summary) > maxMergeSummaryBytes {
+		fail(w, http.StatusBadRequest, "summary must be 1-20000 characters")
+		return
 	}
-	summary, _ := json.Marshal(input.Points)
+	summaryJSON, _ := json.Marshal(input.Summary)
 	if response, storedSummary, ok := a.existingMerge(sourceID, input.IdempotencyKey); ok {
-		if storedSummary != string(summary) || response["watermark"] != input.PreviewWatermark {
+		if storedSummary != input.Summary || response["watermark"] != input.PreviewWatermark {
 			fail(w, http.StatusConflict, "idempotency key was already used for a different merge")
 			return
 		}
@@ -762,8 +769,8 @@ func (a *App) mergeConversation(w http.ResponseWriter, r *http.Request, sourceID
 		return
 	}
 	if response, storedSummary, ok := a.existingMergeAtWatermark(sourceID, input.PreviewWatermark); ok {
-		if storedSummary != string(summary) {
-			fail(w, http.StatusConflict, "this conversation version was already merged with different points")
+		if storedSummary != input.Summary {
+			fail(w, http.StatusConflict, "this conversation version was already merged with a different summary")
 			return
 		}
 		jsonOut(w, http.StatusOK, response)
@@ -798,14 +805,14 @@ func (a *App) mergeConversation(w http.ResponseWriter, r *http.Request, sourceID
 		return
 	}
 	result, err := tx.Exec(`INSERT INTO conversation_merges(source_conversation_id,target_conversation_id,approved_summary_json,source_event_watermark,idempotency_key,author_user_id)
-		VALUES(?,?,?,?,?,?)`, sourceID, parentID, string(summary), watermark, input.IdempotencyKey, uid(r))
+		VALUES(?,?,?,?,?,?)`, sourceID, parentID, string(summaryJSON), watermark, input.IdempotencyKey, uid(r))
 	if err != nil {
 		tx.Rollback()
-		if response, storedSummary, ok := a.existingMerge(sourceID, input.IdempotencyKey); ok && storedSummary == string(summary) && response["watermark"] == input.PreviewWatermark {
+		if response, storedSummary, ok := a.existingMerge(sourceID, input.IdempotencyKey); ok && storedSummary == input.Summary && response["watermark"] == input.PreviewWatermark {
 			jsonOut(w, http.StatusOK, response)
 			return
 		}
-		if response, storedSummary, ok := a.existingMergeAtWatermark(sourceID, input.PreviewWatermark); ok && storedSummary == string(summary) {
+		if response, storedSummary, ok := a.existingMergeAtWatermark(sourceID, input.PreviewWatermark); ok && storedSummary == input.Summary {
 			jsonOut(w, http.StatusOK, response)
 			return
 		}
@@ -826,7 +833,7 @@ func (a *App) mergeConversation(w http.ResponseWriter, r *http.Request, sourceID
 	tx.QueryRow(`SELECT created_at FROM conversation_merges WHERE id=?`, mergeID).Scan(&createdAt)
 	card, _ := json.Marshal(map[string]any{
 		"mergeId": mergeID, "sourceConversationId": sourceID, "sourceTitle": sourceTitle,
-		"author": author, "createdAt": createdAt, "points": input.Points,
+		"author": author, "createdAt": createdAt, "summary": input.Summary,
 	})
 	if err = appendConversationEventTx(tx, jobID, parentID, "merge", string(card)); err == nil {
 		_, err = tx.Exec(`UPDATE job_conversations SET status='merged',updated_at=CURRENT_TIMESTAMP WHERE id=?`, sourceID)
@@ -842,7 +849,7 @@ func (a *App) mergeConversation(w http.ResponseWriter, r *http.Request, sourceID
 		fail(w, http.StatusInternalServerError, "could not merge conversation")
 		return
 	}
-	jsonOut(w, http.StatusCreated, mergeResponse(mergeID, sourceID, parentID, input.Points, watermark, createdAt))
+	jsonOut(w, http.StatusCreated, mergeResponse(mergeID, sourceID, parentID, input.Summary, watermark, createdAt))
 	a.signal()
 }
 
@@ -855,9 +862,8 @@ func (a *App) existingMerge(sourceID int64, key string) (map[string]any, string,
 	if err != nil {
 		return nil, "", false
 	}
-	points := []string{}
-	json.Unmarshal([]byte(summary), &points)
-	return mergeResponse(id, sourceID, target, points, watermark, created), summary, true
+	approved := approvedMergeSummary(summary)
+	return mergeResponse(id, sourceID, target, approved, watermark, created), approved, true
 }
 
 func (a *App) existingMergeAtWatermark(sourceID, watermark int64) (map[string]any, string, bool) {
@@ -869,13 +875,24 @@ func (a *App) existingMergeAtWatermark(sourceID, watermark int64) (map[string]an
 	if err != nil {
 		return nil, "", false
 	}
-	points := []string{}
-	json.Unmarshal([]byte(summary), &points)
-	return mergeResponse(id, sourceID, target, points, watermark, created), summary, true
+	approved := approvedMergeSummary(summary)
+	return mergeResponse(id, sourceID, target, approved, watermark, created), approved, true
 }
 
-func mergeResponse(id, source, target int64, points []string, watermark int64, created string) map[string]any {
-	return map[string]any{"id": id, "sourceConversationId": source, "targetConversationId": target, "points": points, "watermark": watermark, "createdAt": created}
+func approvedMergeSummary(stored string) string {
+	var summary string
+	if json.Unmarshal([]byte(stored), &summary) == nil {
+		return summary
+	}
+	var points []string
+	if json.Unmarshal([]byte(stored), &points) == nil {
+		return strings.Join(points, "\n\n")
+	}
+	return strings.TrimSpace(stored)
+}
+
+func mergeResponse(id, source, target int64, summary string, watermark int64, created string) map[string]any {
+	return map[string]any{"id": id, "sourceConversationId": source, "targetConversationId": target, "summary": summary, "watermark": watermark, "createdAt": created}
 }
 
 func (a *App) conversationStream(w http.ResponseWriter, r *http.Request, conversationID int64) {
