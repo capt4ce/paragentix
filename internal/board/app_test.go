@@ -359,6 +359,39 @@ func TestMoveTodoJobToEndOfSameProjectColumn(t *testing.T) {
 	}
 }
 
+func TestMoveJobCreatesColumnAndReturnsItsID(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"move-new@example.com","password":"password1"}`)
+	var boardID, projectID, laneID int64
+	a.DB.QueryRow(`SELECT b.id,p.id FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=(SELECT id FROM users WHERE email=?)`, "move-new@example.com").Scan(&boardID, &projectID)
+	w, _ := req(t, h, cookie, "POST", "/api/boards/"+itoa(boardID)+"/columns", `{"name":"Source","projectId":`+itoa(projectID)+`}`)
+	var column map[string]any
+	json.Unmarshal(w.Body.Bytes(), &column)
+	a.DB.QueryRow("SELECT lane_id FROM columns WHERE id=?", int64(column["id"].(float64))).Scan(&laneID)
+	res, _ := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES((SELECT id FROM users WHERE email=?),?,'new destination','in_progress',0)", "move-new@example.com", laneID)
+	jobID, _ := res.LastInsertId()
+	w, _ = req(t, h, cookie, "POST", "/api/jobs/"+itoa(jobID)+"/move", `{"newColumnName":"Created destination"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("move: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	newColumnID := int64(out["columnId"].(float64))
+	if newColumnID == 0 {
+		t.Fatal("move returned no created column id")
+	}
+	var movedLane int64
+	a.DB.QueryRow("SELECT lane_id FROM jobs WHERE id=?", jobID).Scan(&movedLane)
+	if movedLane == laneID {
+		t.Fatal("job remained in source column")
+	}
+}
+
 func TestReorderColumnsPersistsBoardOrder(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {

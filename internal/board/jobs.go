@@ -470,14 +470,14 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		return
 	}
 	defer tx.Rollback()
-	var sourceProject, board, targetLane int64
+	var sourceProject, board, targetLane, targetColumnID int64
 	var sourceName, targetName, jobTitle string
 	if err = tx.QueryRow(`SELECT c.project_id,c.board_id,c.name,j.title FROM jobs j JOIN columns c ON c.lane_id=j.lane_id WHERE j.id=? AND (j.user_id=? OR EXISTS(SELECT 1 FROM workspace_members m WHERE m.workspace_id=(SELECT workspace_id FROM boards WHERE id=c.board_id) AND m.user_id=?))`, id, uid(r), uid(r)).Scan(&sourceProject, &board, &sourceName, &jobTitle); err != nil {
 		fail(w, 404, "job not found")
 		return
 	}
 	if x.ColumnID != 0 {
-		err = tx.QueryRow(`SELECT lane_id,name FROM columns WHERE id=? AND board_id=? AND project_id=? AND archived=0`, x.ColumnID, board, sourceProject).Scan(&targetLane, &targetName)
+		err = tx.QueryRow(`SELECT id,lane_id,name FROM columns WHERE id=? AND board_id=? AND project_id=? AND archived=0`, x.ColumnID, board, sourceProject).Scan(&targetColumnID, &targetLane, &targetName)
 	} else {
 		name := strings.TrimSpace(x.NewColumnName)
 		if name == "" {
@@ -494,6 +494,7 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 			var exists int
 			err = tx.QueryRow("SELECT 1 FROM columns WHERE board_id=? AND project_id=? AND name=? AND archived=0", board, sourceProject, name).Scan(&exists)
 			if err == sql.ErrNoRows {
+				err = nil
 				break
 			}
 			if strings.TrimSpace(x.NewColumnName) != "" {
@@ -511,10 +512,12 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		}
 		targetLane, _ = res.LastInsertId()
 		tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM columns WHERE board_id=?", board).Scan(&columnPosition)
-		if _, e = tx.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) VALUES(?,?,?,?,?,?)", uid(r), board, targetLane, sourceProject, name, columnPosition); e != nil {
+		res, e = tx.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) VALUES(?,?,?,?,?,?)", uid(r), board, targetLane, sourceProject, name, columnPosition)
+		if e != nil {
 			fail(w, 500, "could not create column")
 			return
 		}
+		targetColumnID, _ = res.LastInsertId()
 		targetName = name
 	}
 	if err != nil || targetLane == 0 {
@@ -538,7 +541,7 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		fail(w, 500, "could not move job")
 		return
 	}
-	jsonOut(w, 200, map[string]any{"ok": true, "columnId": x.ColumnID, "columnName": targetName, "state": state})
+	jsonOut(w, 200, map[string]any{"ok": true, "columnId": targetColumnID, "columnName": targetName, "state": state})
 	a.signal()
 }
 

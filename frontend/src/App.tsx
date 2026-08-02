@@ -1373,8 +1373,9 @@ export function App() {
                         await load();
                       }, setToast, `Job ${j.id} archived`, `Failed to archive job ${j.id}`);
                     }}
-                    move={() => {
-                      const targets = cols.filter((target) => target.id !== c.id && target.projectId === c.projectId);
+                    move={async () => {
+                      const freshCols = await api(`/boards/${board.id}/columns`);
+                      const targets = freshCols.filter((target: any) => target.id !== c.id && target.projectId === c.projectId);
                       setForm({ jobId: j.id, identity: j.title || j.task, columnId: targets[0]?.id, targets, newColumn: false, newColumnName: "" });
                       setDialog("move job");
                     }}
