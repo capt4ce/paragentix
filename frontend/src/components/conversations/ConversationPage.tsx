@@ -5,6 +5,7 @@ import { conversationLocation } from "@/lib/routes";
 import { DialogShell } from "@/components/DialogShell";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { normalizeMergePreview } from "@/components/conversations/mergePreview";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -410,7 +411,7 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
         {job && <StatusBadge state={job.state} />}
         {active?.parentConversationId && !readOnly && <Button type="button" onClick={async () => {
           try {
-            setMergePreview(await api(`/conversations/${activeId}/merge-preview`, { method: "POST", body: "{}" }));
+            setMergePreview(normalizeMergePreview(await api(`/conversations/${activeId}/merge-preview`, { method: "POST", body: "{}" })));
           } catch (failure) { setError(String(failure)); }
         }}>Merge back to parent</Button>}
       </header>
