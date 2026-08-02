@@ -292,7 +292,7 @@ export function JobCard({
           {job.creatorName}
         </span>
       </span>
-      {job.state === "todo" && move && <button type="button" className="job-move" aria-label={`Move ${identity}`} title="Move to another column" onClick={(e) => { e.stopPropagation(); move(); }}><MoveRight size={16} /></button>}
+      {move && <button type="button" className="job-move" aria-label={`Move ${identity}`} title="Move job" onClick={(e) => { e.stopPropagation(); move(); }}><MoveRight size={16} /></button>}
       <AsyncButton
         type="button"
         className="job-archive danger"
@@ -809,7 +809,7 @@ export function App() {
           ...jobCreationRequest(form.chooseColumn ? { ...form, columnId: form.newColumn ? undefined : form.columnId, projectId: form.newColumn ? form.projectId : undefined } : form),
         });
       if (dialog === "move job")
-        await api(`/jobs/${form.jobId}/move`, { method: "POST", body: JSON.stringify({ columnId: Number(form.columnId) }) });
+        await api(`/jobs/${form.jobId}/move`, { method: "POST", body: JSON.stringify({ columnId: form.newColumn ? 0 : Number(form.columnId), newColumnName: form.newColumnName || "" }) });
       if (dialog === "edit column")
         await api(`/columns/${form.id}`, {
           method: "PATCH",
@@ -1375,7 +1375,7 @@ export function App() {
                     }}
                     move={() => {
                       const targets = cols.filter((target) => target.id !== c.id && target.projectId === c.projectId);
-                      setForm({ jobId: j.id, identity: j.title || j.task, columnId: targets[0]?.id, targets });
+                      setForm({ jobId: j.id, identity: j.title || j.task, columnId: targets[0]?.id, targets, newColumn: false, newColumnName: "" });
                       setDialog("move job");
                     }}
                   />
@@ -1406,11 +1406,13 @@ export function App() {
             </>
           ) : dialog === "move job" ? (
             <>
-              <p>Move <b>{form.identity}</b> to the end of:</p>
-              {form.targets?.length ? <label>Column<select required value={form.columnId || ""} onChange={(e) => setForm({ ...form, columnId: e.target.value })}>
-                {form.targets.map((column: any) => <option key={column.id} value={column.id}>{column.name}</option>)}
-              </select></label> : <p>No other columns use this project.</p>}
-              <AsyncButton type="button" disabled={!form.columnId} onClick={submit}>Move job</AsyncButton>
+              <p>Move <b>{form.identity}</b> to:</p>
+              <label>Column<select required value={form.newColumn ? "new" : form.columnId || ""} onChange={(e) => setForm({ ...form, newColumn: e.target.value === "new", columnId: e.target.value === "new" ? "" : e.target.value })}>
+                {form.targets?.map((column: any) => <option key={column.id} value={column.id}>{column.name}</option>)}
+                <option value="new">&lt;New column&gt;</option>
+              </select></label>
+              {form.newColumn && <label>Column name (optional)<input maxLength={120} value={form.newColumnName || ""} onChange={(e) => setForm({ ...form, newColumnName: e.target.value })} /></label>}
+              <AsyncButton type="button" disabled={!form.newColumn && !form.columnId} onClick={submit}>Move job</AsyncButton>
             </>
           ) : (
             <>

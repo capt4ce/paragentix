@@ -270,7 +270,7 @@ func (a *App) jobPath(w http.ResponseWriter, r *http.Request) {
 	var archived bool
 	var attempts int
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	workspaceAccess := (r.Method == "GET" && (len(parts) == 1 || len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream" || parts[1] == "conversations"))) || (r.Method == "DELETE" && len(parts) == 1)
+	workspaceAccess := ((r.Method == "GET" || r.Method == "POST") && len(parts) == 2 && (parts[1] == "events" || parts[1] == "stream" || parts[1] == "conversations" || parts[1] == "move")) || (r.Method == "GET" && len(parts) == 1) || (r.Method == "DELETE" && len(parts) == 1)
 	if workspaceAccess {
 		e = a.DB.QueryRow(`SELECT j.state,j.archived,j.attempt_count FROM jobs j WHERE j.id=? AND (j.user_id=? OR EXISTS(
 			SELECT 1 FROM columns c JOIN boards b ON b.id=c.board_id JOIN workspace_members m ON m.workspace_id=b.workspace_id
@@ -456,20 +456,12 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		fail(w, 405, "method not allowed")
 		return
 	}
-	if state != "todo" {
-		fail(w, 409, "only todo jobs can move")
-		return
-	}
 	var x struct {
-		ColumnID int64 `json:"columnId"`
+		ColumnID      int64  `json:"columnId"`
+		NewColumnName string `json:"newColumnName"`
 	}
-	if decode(r, &x) != nil || x.ColumnID == 0 {
-		fail(w, 400, "columnId required")
-		return
-	}
-	var targetLane int64
-	if err := a.DB.QueryRow(`SELECT target.lane_id FROM jobs j JOIN columns source ON source.lane_id=j.lane_id JOIN columns target ON target.id=? AND target.project_id=source.project_id AND target.board_id=source.board_id AND target.archived=0 WHERE j.id=? AND j.user_id=?`, x.ColumnID, id, uid(r)).Scan(&targetLane); err != nil {
-		fail(w, 409, "target column must be on the same board and project")
+	if decode(r, &x) != nil {
+		fail(w, 400, "invalid request")
 		return
 	}
 	tx, err := a.DB.Begin()
@@ -478,30 +470,75 @@ func (a *App) moveJob(w http.ResponseWriter, r *http.Request, id int64, state st
 		return
 	}
 	defer tx.Rollback()
-	var position int
-	if err = tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=? AND archived=0", targetLane).Scan(&position); err == nil {
-		var sourceName, targetName string
-		err = tx.QueryRow(`SELECT source.name,target.name FROM jobs j JOIN columns source ON source.lane_id=j.lane_id JOIN columns target ON target.id=? WHERE j.id=?`, x.ColumnID, id).Scan(&sourceName, &targetName)
-		if err == nil {
-			var result sql.Result
-			result, err = tx.Exec("UPDATE jobs SET lane_id=?,position=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='todo'", targetLane, position, id)
-			if changed, _ := result.RowsAffected(); err == nil && changed != 1 {
-				err = fmt.Errorf("job state changed")
-			}
-			if err == nil {
-				err = appendJobEventTx(tx, id, "move", fmt.Sprintf("Moved from %s to %s", sourceName, targetName))
-			}
-		}
+	var sourceProject, board, targetLane int64
+	var sourceName, targetName, jobTitle string
+	if err = tx.QueryRow(`SELECT c.project_id,c.board_id,c.name,j.title FROM jobs j JOIN columns c ON c.lane_id=j.lane_id WHERE j.id=? AND (j.user_id=? OR EXISTS(SELECT 1 FROM workspace_members m WHERE m.workspace_id=(SELECT workspace_id FROM boards WHERE id=c.board_id) AND m.user_id=?))`, id, uid(r), uid(r)).Scan(&sourceProject, &board, &sourceName, &jobTitle); err != nil {
+		fail(w, 404, "job not found")
+		return
 	}
-	if err != nil {
+	if x.ColumnID != 0 {
+		err = tx.QueryRow(`SELECT lane_id,name FROM columns WHERE id=? AND board_id=? AND project_id=? AND archived=0`, x.ColumnID, board, sourceProject).Scan(&targetLane, &targetName)
+	} else {
+		name := strings.TrimSpace(x.NewColumnName)
+		if name == "" {
+			name = fallbackJobTitle(jobTitle)
+		}
+		if name == "" {
+			name = "New column"
+		}
+		if len([]rune(name)) > 120 {
+			fail(w, 400, "column name must be 120 characters or fewer")
+			return
+		}
+		for suffix := 2; ; suffix++ {
+			var exists int
+			err = tx.QueryRow("SELECT 1 FROM columns WHERE board_id=? AND project_id=? AND name=? AND archived=0", board, sourceProject, name).Scan(&exists)
+			if err == sql.ErrNoRows {
+				break
+			}
+			if strings.TrimSpace(x.NewColumnName) != "" {
+				fail(w, 409, "column name already exists")
+				return
+			}
+			name = fmt.Sprintf("%s %d", name, suffix)
+		}
+		var lanePosition, columnPosition int
+		tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM lanes WHERE user_id=?", uid(r)).Scan(&lanePosition)
+		res, e := tx.Exec("INSERT INTO lanes(user_id,name,position) VALUES(?,?,?)", uid(r), name, lanePosition)
+		if e != nil {
+			fail(w, 500, "could not create column")
+			return
+		}
+		targetLane, _ = res.LastInsertId()
+		tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM columns WHERE board_id=?", board).Scan(&columnPosition)
+		if _, e = tx.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) VALUES(?,?,?,?,?,?)", uid(r), board, targetLane, sourceProject, name, columnPosition); e != nil {
+			fail(w, 500, "could not create column")
+			return
+		}
+		targetName = name
+	}
+	if err != nil || targetLane == 0 {
+		fail(w, 409, "target column must be on the same board and project")
+		return
+	}
+	var position int
+	if err = tx.QueryRow("SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=? AND archived=0", targetLane).Scan(&position); err != nil {
 		fail(w, 409, "could not move job")
+		return
+	}
+	if _, err = tx.Exec("UPDATE jobs SET lane_id=?,position=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", targetLane, position, id); err != nil {
+		fail(w, 409, "could not move job")
+		return
+	}
+	if err = appendJobEventTx(tx, id, "move", fmt.Sprintf("Moved from %s to %s", sourceName, targetName)); err != nil {
+		fail(w, 500, "could not record move")
 		return
 	}
 	if err = tx.Commit(); err != nil {
 		fail(w, 500, "could not move job")
 		return
 	}
-	jsonOut(w, 200, map[string]bool{"ok": true})
+	jsonOut(w, 200, map[string]any{"ok": true, "columnId": x.ColumnID, "columnName": targetName, "state": state})
 	a.signal()
 }
 
