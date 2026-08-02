@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { StatusBadge } from "@/components/jobs/StatusBadge";
 import { api, base } from "@/lib/api";
-import { boardLocation, conversationLocation, jobLocation, parseLocation, projectLocation } from "@/lib/routes";
+import { boardLocation, conversationLocation, parseLocation, projectLocation } from "@/lib/routes";
 import { Auth } from "@/components/Auth";
 import { DialogShell } from "@/components/DialogShell";
 import { Button } from "@/components/ui/button";
@@ -347,7 +347,7 @@ export function DoneDefinitionField({ job, value, onChange }: { job: any; value:
   ) : (
     <section className="job-inspector-section">
       <h3>Done definition</h3>
-      <p><TimelineContent content={job.done_definition} /></p>
+      <p>{job.done_definition}</p>
     </section>
   );
 }
@@ -401,7 +401,7 @@ function JobDetail({
       <div className="job-inspector-work">
       <section className="job-inspector-section">
         <h3>Task</h3>
-        <p><TimelineContent content={j.task} /></p>
+        <p>{j.task}</p>
       </section>
       <DoneDefinitionField job={j} value={done} onChange={setDone} />
       {canEditDoneDefinition(j) && (
@@ -643,16 +643,12 @@ export function App() {
     }
   };
   useJobDetailHistory(!!job, () => setJob(undefined));
-  const openJob = async (jobId: number) => {
-    history.pushState({}, "", jobLocation(jobId));
-    setJob(jobDetail(await api(`/jobs/${jobId}`)));
-  };
   const load = async () => {
     const w = await api("/workspaces"),
       b = await api("/boards");
     setWs(w);
     setBoards(b);
-    const route = parseLocation(location.search, location.pathname);
+    const route = parseLocation(location.search);
     const active =
       b.find((x: any) => x.id === ((route as any).boardId || board?.id)) ||
       b[0];
@@ -660,7 +656,7 @@ export function App() {
     setCols(active ? await api(`/boards/${active.id}/columns`) : []);
   };
   const restore = async () => {
-    const route = parseLocation(location.search, location.pathname);
+    const route = parseLocation(location.search);
     setView(route.view);
     if (route.view === "workspace") {
       const d = await api("/workspaces/" + route.workspaceId);
@@ -690,7 +686,7 @@ export function App() {
         setMe(x);
         try {
           await load();
-          const route = parseLocation(location.search, location.pathname);
+          const route = parseLocation(location.search);
           if (route.view === "invitation") {
             const pending = await api(`/invitations/${encodeURIComponent(route.token!)}`);
             if (invitationSessionAction(x.email, pending.email) === "logout") {
@@ -848,7 +844,7 @@ export function App() {
       submitting.current = false;
     }
   };
-  const route = parseLocation(location.search, location.pathname);
+  const route = parseLocation(location.search);
   if (me === undefined) return null;
   if (!me)
     return (
@@ -858,9 +854,6 @@ export function App() {
     );
   if (route.view === "conversation")
     return <ConversationPage jobId={route.jobId} initialConversationId={route.conversationId} />;
-  if (route.view === "job" && !job) {
-    void openJob(route.jobId);
-  }
   const openNotification = async (n: any) => {
     await api(`/notifications/${n.id}`, {
       method: "PATCH",
@@ -1373,7 +1366,7 @@ export function App() {
                   <JobCard
                     key={j.id}
                     job={j}
-                    open={() => void openJob(j.id)}
+                    open={() => setJob(j)}
                     archive={async () => {
                       await runWithToast(async () => {
                         await api(`/jobs/${j.id}`, { method: "DELETE" });

@@ -4,21 +4,12 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, jobLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe("job board synchronization", () => {
-  it("renders job detail text with the same links as timeline content", () => {
-    const content = "See https://example.test/log. [details](https://example.test/details)";
-    const timeline = render(createElement(TimelineContent, { content }));
-    const detail = render(createElement(DoneDefinitionField, {
-      job: { state: "done", done_definition: content }, value: "", onChange: vi.fn(),
-    }));
-    expect(detail.container.querySelectorAll("a")).toHaveLength(timeline.container.querySelectorAll("a").length);
-    expect(detail.container.querySelector("a")?.getAttribute("href")).toBe("https://example.test/log");
-  });
   it("offers moving jobs in every status", () => {
     const move = vi.fn(async () => {});
     const todo = render(createElement(JobCard, { job: { id: 1, task: "queued", state: "todo", creatorName: "a" }, open: vi.fn(), archive: vi.fn(), move }));
@@ -107,13 +98,6 @@ describe("async button", () => {
     fireEvent.click(button);
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     expect(button.textContent).toBe("Retry");
-  });
-});
-describe("job URL routing", () => {
-  it("recognizes canonical job detail paths", () => {
-    expect(jobLocation(42)).toBe("/jobs/42");
-    expect(parseLocation("", "/jobs/42")).toEqual({ view: "job", jobId: 42 });
-    expect(parseLocation("", "/jobs/42/")).toEqual({ view: "job", jobId: 42 });
   });
 });
 describe("workspace URL restoration", () => {
