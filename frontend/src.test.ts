@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, refreshJobAndBoard, JobDetailMeta, JobTask, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetail, refreshJobAndBoard, JobDetailMeta, JobTask, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
@@ -101,6 +101,11 @@ describe("async button", () => {
   });
 });
 describe("workspace URL restoration", () => {
+  it("recognizes only numeric dedicated job pathnames", () => {
+    expect(parseLocation("", "/jobs/42")).toEqual({ view: "job", jobId: 42 });
+    expect(parseLocation("", "/jobs/42/")).toEqual({ view: "job", jobId: 42 });
+    expect(parseLocation("", "/jobs/not-a-job")).toEqual({ view: "board" });
+  });
   it("restores list and valid detail tabs", () => {
     expect(parseLocation("?workspaces=1")).toEqual({ view: "workspaces" });
     expect(parseLocation("?workspace=7&tab=Projects")).toEqual({ view: "workspace", workspaceId: 7, tab: "Projects" });
@@ -648,6 +653,30 @@ describe("job comments", () => {
   });
 });
 describe("job detail session", () => {
+  it("renders plain and Markdown Task links on the dedicated full page", () => {
+    const html = renderToStaticMarkup(createElement(JobDetail, {
+      job: {
+        id: 42,
+        title: "Linked task",
+        task: "Read https://example.test/spec and [notes](https://example.test/notes).",
+        state: "done",
+        attempt_count: 1,
+        done_definition: "Complete",
+        events: [],
+        archived: true,
+      },
+      close: vi.fn(),
+      refresh: vi.fn(async () => {}),
+      notify: vi.fn(),
+      fullPage: true,
+    }));
+
+    expect(html).toContain('<main class="job-detail-page dialog-shell-body" aria-label="Job detail">');
+    expect(html).toContain('href="https://example.test/spec"');
+    expect(html).toContain('href="https://example.test/notes"');
+    expect(html).toContain('>notes</a>');
+  });
+
   it("renders a plain HTTPS URL in Task as a safe anchor without losing surrounding text", () => {
     const task = "Review https://example.test/spec before implementation.";
     const { container, getByRole } = render(createElement(JobTask, { task }));
@@ -720,6 +749,23 @@ describe("job detail history", () => {
   });
 });
 describe("job actions", () => {
+  it("keeps job-card clicks modal-driven without changing the pathname", () => {
+    history.replaceState({}, "", "/");
+    const open = vi.fn();
+    const pushState = vi.spyOn(history, "pushState");
+    const screen = render(createElement(JobCard, {
+      job: { id: 42, task: "Open in modal", state: "todo" },
+      open,
+      archive: vi.fn(async () => {}),
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open in modal Todo" }));
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(pushState).not.toHaveBeenCalled();
+    expect(location.pathname).toBe("/");
+  });
+
   it("abbreviates long task text while exposing the full task", () => {
     const wordLimitedTask = "one two three four five six seven eight nine ten a b c d e f";
     const characterLimitedTask = "abcdefgh ijklmnop qrstuvwx yzabcdef ghijklmn opqrstuv wxyzabcd efghijkl";

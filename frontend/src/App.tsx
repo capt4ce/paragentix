@@ -359,16 +359,18 @@ export function JobTask({ task }: { task: string }) {
     </section>
   );
 }
-function JobDetail({
+export function JobDetail({
   job,
   close,
   refresh,
   notify,
+  fullPage = false,
 }: {
   job: any;
   close: () => void;
   refresh: () => Promise<void>;
   notify: (toast: ToastMessage) => void;
+  fullPage?: boolean;
 }) {
   const [d, setD] = useState<any>(),
     [done, setDone] = useState(job.done_definition),
@@ -401,8 +403,8 @@ function JobDetail({
       close();
     }, notify, `Job ${job.id} ${a === "retry" ? "retried" : a}`, `Failed to ${a} job ${job.id}`);
   };
-  return (
-    <DialogShell title="Job detail" close={close} inspector>
+  const content = (
+    <>
       <div className="job-inspector-overview">
         <JobDetailMeta job={j} notify={notify} />
       </div>
@@ -549,7 +551,32 @@ function JobDetail({
           throw failure;
         }
       }} />
-    </DialogShell>
+    </>
+  );
+  return fullPage
+    ? <main className="job-detail-page dialog-shell-body" aria-label="Job detail">{content}</main>
+    : <DialogShell title="Job detail" close={close} inspector>{content}</DialogShell>;
+}
+export function JobDetailPage({ jobId }: { jobId: number }) {
+  const [job, setJob] = useState<any>();
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState<ToastMessage>();
+  const loadJob = useCallback(async () => {
+    try {
+      setJob(jobDetail(await api(`/jobs/${jobId}`)));
+      setError("");
+    } catch (failure) {
+      setError(String(failure));
+    }
+  }, [jobId]);
+  useEffect(() => { void loadJob(); }, [loadJob]);
+  if (error) return <main className="job-detail-page" role="alert">{error}</main>;
+  if (!job) return <main className="job-detail-page" aria-busy="true">Loading job detail…</main>;
+  return (
+    <>
+      <JobDetail job={job} close={() => {}} refresh={loadJob} notify={setToast} fullPage />
+      <Toast toast={toast} onDismiss={() => setToast(undefined)} />
+    </>
   );
 }
 export function closeDetails(ref: { current: HTMLDetailsElement | null }) {
@@ -653,7 +680,7 @@ export function App() {
       b = await api("/boards");
     setWs(w);
     setBoards(b);
-    const route = parseLocation(location.search);
+    const route = parseLocation(location.search, location.pathname);
     const active =
       b.find((x: any) => x.id === ((route as any).boardId || board?.id)) ||
       b[0];
@@ -661,7 +688,7 @@ export function App() {
     setCols(active ? await api(`/boards/${active.id}/columns`) : []);
   };
   const restore = async () => {
-    const route = parseLocation(location.search);
+    const route = parseLocation(location.search, location.pathname);
     setView(route.view);
     if (route.view === "workspace") {
       const d = await api("/workspaces/" + route.workspaceId);
@@ -691,7 +718,7 @@ export function App() {
         setMe(x);
         try {
           await load();
-          const route = parseLocation(location.search);
+          const route = parseLocation(location.search, location.pathname);
           if (route.view === "invitation") {
             const pending = await api(`/invitations/${encodeURIComponent(route.token!)}`);
             if (invitationSessionAction(x.email, pending.email) === "logout") {
@@ -849,7 +876,7 @@ export function App() {
       submitting.current = false;
     }
   };
-  const route = parseLocation(location.search);
+  const route = parseLocation(location.search, location.pathname);
   if (me === undefined) return null;
   if (!me)
     return (
@@ -859,6 +886,7 @@ export function App() {
     );
   if (route.view === "conversation")
     return <ConversationPage jobId={route.jobId} initialConversationId={route.conversationId} />;
+  if (route.view === "job") return <JobDetailPage jobId={route.jobId} />;
   const openNotification = async (n: any) => {
     await api(`/notifications/${n.id}`, {
       method: "PATCH",
