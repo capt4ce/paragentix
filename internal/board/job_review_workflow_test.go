@@ -191,7 +191,7 @@ func TestReviewApprovalAndFeedbackTransitionsAreAtomicAndReuseSession(t *testing
 	}
 	a.DB.QueryRow(`SELECT state,phase FROM jobs WHERE id=?`, job).Scan(&state, &pending)
 	a.DB.QueryRow(`SELECT tmux_session FROM job_runs WHERE id=?`, run).Scan(&session)
-	if state != "in_progress" || pending != "implementation" || session != "hermes-api:same-session" {
+	if state != "todo" || pending != "implementation" || session != "hermes-api:same-session" {
 		t.Fatalf("approval state=%q phase=%q session=%q", state, pending, session)
 	}
 	w, _ = req(t, a.Handler(), cookie, "POST", "/api/jobs/"+itoa(job)+"/approve", `{}`)
@@ -266,7 +266,7 @@ func TestApprovalReplyUsesApprovalTransition(t *testing.T) {
 	var state, phase, status string
 	a.DB.QueryRow(`SELECT state,phase FROM jobs WHERE id=?`, job).Scan(&state, &phase)
 	a.DB.QueryRow(`SELECT status FROM job_runs WHERE id=?`, run).Scan(&status)
-	if state != "in_progress" || phase != "implementation" || status != "running" {
+	if state != "todo" || phase != "implementation" || status != "done" {
 		t.Fatalf("approval state=%q phase=%q run=%q", state, phase, status)
 	}
 	var comments, approvals int

@@ -846,6 +846,134 @@ func TestRetryQueuesAtLaneEndThenSchedulerReusesLatestHermesSessionAndRun(t *tes
 	}
 }
 
+func TestApprovalQueuesAtLaneEndThenSchedulerReusesLatestHermesSessionAndRun(t *testing.T) {
+	requestSeen := make(chan struct{}, 1)
+	var hermesCalls atomic.Int32
+	var a *App
+	var job, latestRun int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/sessions/latest-approval-session/messages" {
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		if r.URL.Path == "/api/sessions/latest-approval-session" {
+			w.Write([]byte(`{"session":{"title":null}}`))
+			return
+		}
+		hermesCalls.Add(1)
+		if got := r.Header.Get("X-Hermes-Session-Id"); got != "latest-approval-session" {
+			t.Errorf("session header=%q, want latest-approval-session", got)
+		}
+		var state, phase, pending, runStatus string
+		if err := a.DB.QueryRow(`SELECT j.state,j.phase,j.pending_comment,r.status FROM jobs j JOIN job_runs r ON r.id=? WHERE j.id=?`, latestRun, job).Scan(&state, &phase, &pending, &runStatus); err != nil {
+			t.Errorf("read scheduled approval state: %v", err)
+		} else if state != "in_progress" || phase != "implementation" || pending != "" || runStatus != "running" {
+			t.Errorf("state at Hermes request=%q phase=%q pending=%q run=%q; want in_progress, implementation, empty, running", state, phase, pending, runStatus)
+		}
+		var body struct {
+			Messages []struct {
+				Role, Content string
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Messages) != 1 || body.Messages[0].Role != "user" || body.Messages[0].Content != "The proposal is explicitly approved. Implement it now, verify the work, and report the completed result.\n\nApproval reply:\nGo ahead and preserve the retry behavior." {
+			t.Errorf("approval request body=%+v err=%v", body, err)
+		}
+		requestSeen <- struct{}{}
+		w.Write([]byte(`{"choices":[{"message":{"content":"implemented"}}]}`))
+	}))
+	defer ts.Close()
+
+	var err error
+	a, err = Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.Handler()
+	_, cookie := req(t, h, nil, "POST", "/api/auth/signup", `{"email":"queued-approval@example.com","password":"password1"}`)
+	var user, lane int64
+	a.DB.QueryRow("SELECT id FROM users WHERE email='queued-approval@example.com'").Scan(&user)
+	a.DB.QueryRow("SELECT id FROM lanes WHERE user_id=?", user).Scan(&lane)
+	a.DB.Exec("INSERT INTO columns(user_id,board_id,lane_id,project_id,name,position) SELECT ?,b.id,?,p.id,'Approval lane',0 FROM boards b JOIN projects p ON p.workspace_id=b.workspace_id WHERE b.user_id=? LIMIT 1", user, lane, user)
+	a.DB.Exec("UPDATE lanes SET paused=1 WHERE id=?", lane)
+	a.DB.Exec("UPDATE workspaces SET hermes_url=?,hermes_api_key='secret' WHERE user_id=?", ts.URL, user)
+	res, err := a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,phase,position,attempt_count) VALUES(?,?,'approved work','in_review','review',0,1)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ = res.LastInsertId()
+	a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:older-approval-session','done',CURRENT_TIMESTAMP)", job)
+	res, err = a.DB.Exec("INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at,result_summary) VALUES(?,1,'hermes-api:latest-approval-session','done',CURRENT_TIMESTAMP,'proposal')", job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latestRun, _ = res.LastInsertId()
+	res, err = a.DB.Exec("INSERT INTO jobs(user_id,lane_id,task,state,position) VALUES(?,?,'already queued','todo',1)", user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedJob, _ := res.LastInsertId()
+
+	w, _ := req(t, h, cookie, "POST", "/api/jobs/"+itoa(job)+"/comment", `{"comment":"Go ahead and preserve the retry behavior."}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve by reply=%d %s", w.Code, w.Body.String())
+	}
+	if got := hermesCalls.Load(); got != 0 {
+		t.Fatalf("Hermes calls immediately after approval=%d, want 0", got)
+	}
+	var state, phase, pending, runStatus, summary string
+	var position int
+	if err = a.DB.QueryRow("SELECT state,phase,pending_comment,position FROM jobs WHERE id=?", job).Scan(&state, &phase, &pending, &position); err != nil {
+		t.Fatal(err)
+	}
+	if state != "todo" || phase != "implementation" || pending != implementationApprovalPendingPrefix+"Go ahead and preserve the retry behavior." || position != 2 {
+		t.Fatalf("queued approval state=%q phase=%q pending=%q position=%d; want todo, implementation, approval reply, 2", state, phase, pending, position)
+	}
+	a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE id=?", latestRun).Scan(&runStatus, &summary)
+	if runStatus != "done" || summary != "proposal" {
+		t.Fatalf("latest run at approval status=%q summary=%q; want unchanged done/proposal", runStatus, summary)
+	}
+
+	w, _ = req(t, h, cookie, "POST", "/api/jobs/"+itoa(job)+"/approve", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("idempotent approve=%d %s", w.Code, w.Body.String())
+	}
+	var approvals, comments int
+	a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='approval'", latestRun).Scan(&approvals)
+	a.DB.QueryRow("SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='comment'", latestRun).Scan(&comments)
+	if approvals != 1 || comments != 1 {
+		t.Fatalf("approval events after duplicate request: approvals=%d comments=%d; want 1 each", approvals, comments)
+	}
+
+	if _, err = a.DB.Exec("UPDATE jobs SET archived=1 WHERE id=?", queuedJob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.DB.Exec("UPDATE lanes SET paused=0 WHERE id=?", lane); err != nil {
+		t.Fatal(err)
+	}
+	a.schedule()
+	select {
+	case <-requestSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hermes implementation request not received after scheduling")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		a.DB.QueryRow("SELECT state FROM jobs WHERE id=?", job).Scan(&state)
+		if state == "done" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job state=%q, want done", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	a.DB.QueryRow("SELECT status,result_summary FROM job_runs WHERE id=?", latestRun).Scan(&runStatus, &summary)
+	if runStatus != "done" || summary != "implemented" {
+		t.Fatalf("scheduled implementation run status=%q summary=%q", runStatus, summary)
+	}
+}
+
 func TestReconcileHermesRestartBlockFromCurrentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, messages, wantState, wantRun string

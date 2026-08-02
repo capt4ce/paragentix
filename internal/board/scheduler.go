@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const implementationApprovalPendingPrefix = "implementation-approved:\n"
+
 func (a *App) signal() {
 	select {
 	case a.wake <- struct{}{}:
@@ -34,22 +36,26 @@ func (a *App) scheduler() {
 	}
 }
 func (a *App) schedule() {
-	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
+	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment,j.phase FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
 	if e != nil {
 		return
 	}
 	type q struct {
-		id                        int64
-		task, done, root, comment string
+		id                               int64
+		task, done, root, comment, phase string
 	}
 	var qs []q
 	for rows.Next() {
 		var x q
-		rows.Scan(&x.id, &x.task, &x.done, &x.root, &x.comment)
+		rows.Scan(&x.id, &x.task, &x.done, &x.root, &x.comment, &x.phase)
 		qs = append(qs, x)
 	}
 	rows.Close()
 	for _, x := range qs {
+		if approvalReply, approved := strings.CutPrefix(x.comment, implementationApprovalPendingPrefix); x.phase == "implementation" && approved {
+			_ = a.resumeHermesImplementation(x.id, approvalReply)
+			continue
+		}
 		if x.comment != "" {
 			if a.resumeHermesFeedback(x.id, x.comment) == nil {
 				continue
@@ -252,25 +258,28 @@ func (a *App) approveHermes(id int64, approvalReply string) (bool, error) {
 	if state == "in_progress" && phase == "implementation" {
 		return false, nil
 	}
+	if state == "todo" && phase == "implementation" {
+		return false, nil
+	}
 	if state != "in_review" || phase != "review" || !strings.HasPrefix(session, "hermes-api:") {
 		return false, fmt.Errorf("job is not awaiting review")
 	}
-	res, err := tx.Exec(`UPDATE jobs SET state='in_progress',phase='implementation',warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='in_review' AND phase='review'`, id)
+	res, err := tx.Exec(`UPDATE jobs SET state='todo',phase='implementation',
+		position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),
+		pending_comment=?,warning='',finished_at=NULL,updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND state='in_review' AND phase='review'`, id, implementationApprovalPendingPrefix+approvalReply, id)
 	if err != nil {
 		return false, err
 	}
 	if changed, _ := res.RowsAffected(); changed != 1 {
 		return false, fmt.Errorf("review state changed")
 	}
-	if _, err = tx.Exec(`UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?`, run); err != nil {
-		return false, err
-	}
 	if approvalReply != "" {
 		if err = appendJobEventTx(tx, id, "comment", approvalReply); err != nil {
 			return false, err
 		}
 	}
-	if err = appendJobEventTx(tx, id, "status", statusContent("in_review", "in_progress")); err != nil {
+	if err = appendJobEventTx(tx, id, "status", statusContent("in_review", "todo")); err != nil {
 		return false, err
 	}
 	if err = appendJobEventTx(tx, id, "approval", "Implementation approved"); err != nil {
@@ -279,12 +288,48 @@ func (a *App) approveHermes(id int64, approvalReply string) (bool, error) {
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
+	a.signal()
+	return true, nil
+}
+
+func (a *App) resumeHermesImplementation(id int64, approvalReply string) error {
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var run int64
+	var session string
+	if err = tx.QueryRow("SELECT id,tmux_session FROM job_runs WHERE job_id=? AND tmux_session LIKE 'hermes-api:%' ORDER BY id DESC LIMIT 1", id).Scan(&run, &session); err != nil {
+		return err
+	}
+	session = strings.TrimPrefix(session, "hermes-api:")
+	if session == "" {
+		return sql.ErrNoRows
+	}
+	res, err := tx.Exec(`UPDATE jobs SET state='in_progress',pending_comment='',warning='',updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND state='todo' AND phase='implementation'`, id)
+	if err != nil {
+		return err
+	}
+	if changed, _ := res.RowsAffected(); changed != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err = tx.Exec("UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?", run); err != nil {
+		return err
+	}
+	if err = appendJobEventTx(tx, id, "status", statusContent("todo", "in_progress")); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
 	prompt := "The proposal is explicitly approved. Implement it now, verify the work, and report the completed result."
 	if approvalReply != "" {
 		prompt += "\n\nApproval reply:\n" + approvalReply
 	}
-	a.runHermesJob(id, run, strings.TrimPrefix(session, "hermes-api:"), prompt)
-	return true, nil
+	a.runHermesJob(id, run, session, prompt)
+	return nil
 }
 
 func (a *App) runHermesJob(id, run int64, sessionID, prompt string) {
