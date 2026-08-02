@@ -10,6 +10,15 @@ import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe("job board synchronization", () => {
+  it("renders job detail text with the same links as timeline content", () => {
+    const content = "See https://example.test/log. [details](https://example.test/details)";
+    const timeline = render(createElement(TimelineContent, { content }));
+    const detail = render(createElement(DoneDefinitionField, {
+      job: { state: "done", done_definition: content }, value: "", onChange: vi.fn(),
+    }));
+    expect(detail.container.querySelectorAll("a")).toHaveLength(timeline.container.querySelectorAll("a").length);
+    expect(detail.container.querySelector("a")?.getAttribute("href")).toBe("https://example.test/log");
+  });
   it("offers moving jobs in every status", () => {
     const move = vi.fn(async () => {});
     const todo = render(createElement(JobCard, { job: { id: 1, task: "queued", state: "todo", creatorName: "a" }, open: vi.fn(), archive: vi.fn(), move }));

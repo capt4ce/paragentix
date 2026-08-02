@@ -347,7 +347,7 @@ export function DoneDefinitionField({ job, value, onChange }: { job: any; value:
   ) : (
     <section className="job-inspector-section">
       <h3>Done definition</h3>
-      <p>{job.done_definition}</p>
+      <p><TimelineContent content={job.done_definition} /></p>
     </section>
   );
 }
@@ -401,7 +401,7 @@ function JobDetail({
       <div className="job-inspector-work">
       <section className="job-inspector-section">
         <h3>Task</h3>
-        <p>{j.task}</p>
+        <p><TimelineContent content={j.task} /></p>
       </section>
       <DoneDefinitionField job={j} value={done} onChange={setDone} />
       {canEditDoneDefinition(j) && (
