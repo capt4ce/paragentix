@@ -162,7 +162,16 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 		fail(w, 400, "comment must be 1-4000 characters")
 		return
 	}
+	approval := state == "in_review" && isApprovalReply(x.Comment)
 	x.Comment = appendAttachmentContext(x.Comment, attachments)
+	if approval {
+		if _, err := a.approveHermes(id, x.Comment); err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		jsonOut(w, 200, map[string]bool{"ok": true})
+		return
+	}
 	if state == "done" || state == "in_review" {
 		var run int64
 		if e := a.DB.QueryRow("SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 1", id).Scan(&run); e != nil {
@@ -192,7 +201,7 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 			fail(w, 500, "could not record status")
 			return
 		}
-		res, e := tx.Exec(`UPDATE jobs SET state='todo',position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state=?`, id, x.Comment, id, state)
+		res, e := tx.Exec(`UPDATE jobs SET state='todo',phase='review',position=(SELECT COALESCE(MAX(position)+1,0) FROM jobs WHERE lane_id=(SELECT lane_id FROM jobs WHERE id=?)),pending_comment=?,finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND state=?`, id, x.Comment, id, state)
 		if e != nil {
 			tx.Rollback()
 			fail(w, 500, "could not requeue job")
@@ -236,6 +245,21 @@ func (a *App) comment(w http.ResponseWriter, r *http.Request, id int64, state st
 	jsonOut(w, 200, map[string]bool{"ok": true})
 	a.signal()
 }
+
+func isApprovalReply(reply string) bool {
+	reply = strings.ToLower(strings.TrimSpace(reply))
+	reply = strings.Trim(reply, " \t\r\n.!?,;:")
+	for _, phrase := range []string{
+		"approve", "approved", "do it", "go ahead", "go for it", "implement it",
+		"looks good", "lgtm", "ok", "okay", "proceed", "ship it", "yes",
+	} {
+		if reply == phrase || strings.HasPrefix(reply, phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) events(w http.ResponseWriter, id int64) {
 	rows, _ := a.DB.Query(`SELECT e.id,CASE WHEN e.kind='output' AND r.tmux_session LIKE 'hermes-api:%' THEN 'reply' ELSE e.kind END,e.content,e.created_at
 		FROM job_events e JOIN job_runs r ON r.id=e.job_run_id

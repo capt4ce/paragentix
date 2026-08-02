@@ -587,7 +587,7 @@ func (a *App) action(w http.ResponseWriter, r *http.Request, id int64, state, ac
 		return
 	}
 	if act == "approve" {
-		_, err := a.approveHermes(id)
+		_, err := a.approveHermes(id, "")
 		if err != nil {
 			fail(w, 409, err.Error())
 			return

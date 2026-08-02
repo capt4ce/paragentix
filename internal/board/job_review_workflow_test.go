@@ -200,6 +200,83 @@ func TestReviewApprovalAndFeedbackTransitionsAreAtomicAndReuseSession(t *testing
 	}
 }
 
+func TestCompletedJobFeedbackStartsANewReviewPhase(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, cookie := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"completed-feedback@example.com","password":"password1"}`)
+	var user, lane int64
+	a.DB.QueryRow(`SELECT id FROM users WHERE email='completed-feedback@example.com'`).Scan(&user)
+	a.DB.QueryRow(`SELECT id FROM lanes WHERE user_id=?`, user).Scan(&lane)
+	a.DB.Exec(`UPDATE lanes SET paused=1 WHERE id=?`, lane)
+	res, err := a.DB.Exec(`INSERT INTO jobs(user_id,lane_id,title,task,state,phase,position,attempt_count) VALUES(?,?,'Review again','private prompt','done','implementation',0,1)`, user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	res, _ = a.DB.Exec(`INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:same-session','done',CURRENT_TIMESTAMP)`, job)
+	run, _ := res.LastInsertId()
+
+	w, _ := req(t, a.Handler(), cookie, "POST", "/api/jobs/"+itoa(job)+"/comment", `{"comment":"The last result is wrong; propose a correction"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("feedback=%d %s", w.Code, w.Body.String())
+	}
+	var state, phase string
+	a.DB.QueryRow(`SELECT state,phase FROM jobs WHERE id=?`, job).Scan(&state, &phase)
+	if state != "todo" || phase != "review" {
+		t.Fatalf("requeued state=%q phase=%q, want todo/review", state, phase)
+	}
+
+	a.DB.Exec(`UPDATE jobs SET state='in_progress' WHERE id=?`, job)
+	a.DB.Exec(`UPDATE job_runs SET status='running',ended_at=NULL WHERE id=?`, run)
+	if err = a.finishHermesRun(job, run, "Revised proposal only; no implementation was performed."); err != nil {
+		t.Fatal(err)
+	}
+	a.DB.QueryRow(`SELECT state,phase FROM jobs WHERE id=?`, job).Scan(&state, &phase)
+	if state != "in_review" || phase != "review" {
+		t.Fatalf("proposal state=%q phase=%q, want in_review/review", state, phase)
+	}
+}
+
+func TestApprovalReplyUsesApprovalTransition(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, cookie := req(t, a.Handler(), nil, "POST", "/api/auth/signup", `{"email":"reply-approval@example.com","password":"password1"}`)
+	var user, lane int64
+	a.DB.QueryRow(`SELECT id FROM users WHERE email='reply-approval@example.com'`).Scan(&user)
+	a.DB.QueryRow(`SELECT id FROM lanes WHERE user_id=?`, user).Scan(&lane)
+	a.DB.Exec(`UPDATE lanes SET paused=1 WHERE id=?`, lane)
+	res, err := a.DB.Exec(`INSERT INTO jobs(user_id,lane_id,title,task,state,phase,position,attempt_count) VALUES(?,?,'Approve by reply','private prompt','in_review','review',0,1)`, user, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := res.LastInsertId()
+	res, _ = a.DB.Exec(`INSERT INTO job_runs(job_id,attempt,tmux_session,status,ended_at) VALUES(?,1,'hermes-api:same-session','done',CURRENT_TIMESTAMP)`, job)
+	run, _ := res.LastInsertId()
+
+	w, _ := req(t, a.Handler(), cookie, "POST", "/api/jobs/"+itoa(job)+"/comment", `{"comment":"Go ahead with the plan"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approval reply=%d %s", w.Code, w.Body.String())
+	}
+	var state, phase, status string
+	a.DB.QueryRow(`SELECT state,phase FROM jobs WHERE id=?`, job).Scan(&state, &phase)
+	a.DB.QueryRow(`SELECT status FROM job_runs WHERE id=?`, run).Scan(&status)
+	if state != "in_progress" || phase != "implementation" || status != "running" {
+		t.Fatalf("approval state=%q phase=%q run=%q", state, phase, status)
+	}
+	var comments, approvals int
+	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='comment' AND content='Go ahead with the plan'`, run).Scan(&comments)
+	a.DB.QueryRow(`SELECT count(*) FROM job_events WHERE job_run_id=? AND kind='approval'`, run).Scan(&approvals)
+	if comments != 1 || approvals != 1 {
+		t.Fatalf("approval reply events: comments=%d approvals=%d", comments, approvals)
+	}
+}
+
 func TestNotificationsExposeActionAndTitleButNeverPrompt(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "db"), t.TempDir())
 	if err != nil {

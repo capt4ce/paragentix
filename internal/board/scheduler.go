@@ -237,7 +237,7 @@ func (a *App) resumeHermesFeedback(id int64, feedback string) error {
 	return nil
 }
 
-func (a *App) approveHermes(id int64) (bool, error) {
+func (a *App) approveHermes(id int64, approvalReply string) (bool, error) {
 	tx, err := a.DB.Begin()
 	if err != nil {
 		return false, err
@@ -265,6 +265,11 @@ func (a *App) approveHermes(id int64) (bool, error) {
 	if _, err = tx.Exec(`UPDATE job_runs SET status='running',ended_at=NULL,result_summary='' WHERE id=?`, run); err != nil {
 		return false, err
 	}
+	if approvalReply != "" {
+		if err = appendJobEventTx(tx, id, "comment", approvalReply); err != nil {
+			return false, err
+		}
+	}
 	if err = appendJobEventTx(tx, id, "status", statusContent("in_review", "in_progress")); err != nil {
 		return false, err
 	}
@@ -274,7 +279,11 @@ func (a *App) approveHermes(id int64) (bool, error) {
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
-	a.runHermesJob(id, run, strings.TrimPrefix(session, "hermes-api:"), "The proposal is explicitly approved. Implement it now, verify the work, and report the completed result.")
+	prompt := "The proposal is explicitly approved. Implement it now, verify the work, and report the completed result."
+	if approvalReply != "" {
+		prompt += "\n\nApproval reply:\n" + approvalReply
+	}
+	a.runHermesJob(id, run, strings.TrimPrefix(session, "hermes-api:"), prompt)
 	return true, nil
 }
 
