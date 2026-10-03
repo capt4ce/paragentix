@@ -36,7 +36,7 @@ func (a *App) scheduler() {
 	}
 }
 func (a *App) schedule() {
-	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment,j.phase FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1)`)
+	rows, e := a.DB.Query(`SELECT j.id,j.task,j.done_definition,s.workspace_root,j.pending_comment,j.phase FROM jobs j JOIN lanes l ON l.id=j.lane_id JOIN user_settings s ON s.user_id=j.user_id WHERE j.state='todo' AND j.archived=0 AND l.paused=0 AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.lane_id=j.lane_id AND x.state IN('in_progress','blocked') AND x.archived=0) AND j.id=(SELECT id FROM jobs q WHERE q.lane_id=j.lane_id AND q.state='todo' AND q.archived=0 ORDER BY q.position LIMIT 1) AND (j.scheduled_at IS NULL OR j.scheduled_at<=CURRENT_TIMESTAMP)`)
 	if e != nil {
 		return
 	}

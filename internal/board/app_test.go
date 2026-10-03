@@ -1186,6 +1186,9 @@ func TestObsoleteColumnMigration(t *testing.T) {
 INSERT INTO jobs(user_id,lane_id,task,position,pending_comment) VALUES((SELECT id FROM users WHERE email='legacy@example.com'),(SELECT id FROM lanes WHERE name='legacy lane'),'preserve me',0,'follow up')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = a.DB.Exec(`UPDATE jobs SET scheduled_at='2026-10-03 16:30:00' WHERE task='preserve me'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = a.DB.Exec(`ALTER TABLE user_settings ADD COLUMN default_cli TEXT NOT NULL DEFAULT 'codex';
 ALTER TABLE jobs ADD COLUMN cli_tool TEXT NOT NULL DEFAULT 'codex';
 ALTER TABLE custom_cli_tools ADD COLUMN command TEXT NOT NULL DEFAULT '';
@@ -1219,9 +1222,9 @@ INSERT INTO custom_cli_tools(user_id,name,command,argv_json) VALUES((SELECT id F
 	if err = a.DB.QueryRow(`SELECT argv_json FROM custom_cli_tools WHERE name='local-agent'`).Scan(&argv); err != nil || argv != `["local-agent","--safe"]` {
 		t.Fatalf("custom tool lost: %q %v", argv, err)
 	}
-	var task, comment string
-	if err = a.DB.QueryRow(`SELECT task,pending_comment FROM jobs WHERE task='preserve me'`).Scan(&task, &comment); err != nil || task != "preserve me" || comment != "follow up" {
-		t.Fatalf("job data lost: task=%q comment=%q err=%v", task, comment, err)
+	var task, comment, scheduled string
+	if err = a.DB.QueryRow(`SELECT task,pending_comment,scheduled_at FROM jobs WHERE task='preserve me'`).Scan(&task, &comment, &scheduled); err != nil || task != "preserve me" || comment != "follow up" || scheduled != "2026-10-03 16:30:00" {
+		t.Fatalf("job data lost: task=%q comment=%q scheduled=%q err=%v", task, comment, scheduled, err)
 	}
 	if err = a.migrate(); err != nil {
 		t.Fatalf("idempotent rerun: %v", err)

@@ -7,7 +7,21 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const sqliteTimeFormat = "2006-01-02 15:04:05"
+
+func scheduledTime(value string) (sql.NullString, error) {
+	if strings.TrimSpace(value) == "" {
+		return sql.NullString{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return sql.NullString{}, err
+	}
+	return sql.NullString{String: t.UTC().Format(sqliteTimeFormat), Valid: true}, nil
+}
 
 func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
@@ -35,10 +49,10 @@ func (a *App) lanes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		l := Lane{Jobs: []Job{}}
 		rows.Scan(&l.ID, &l.Name, &l.Position, &l.Paused)
-		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? AND j.archived=0 ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 WHEN 'blocked' THEN 2 WHEN 'todo' THEN 3 ELSE 4 END,j.position", l.ID)
+		jr, _ := a.DB.Query("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.scheduled_at FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.lane_id=? AND j.archived=0 ORDER BY CASE j.state WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 WHEN 'blocked' THEN 2 WHEN 'todo' THEN 3 ELSE 4 END,j.position", l.ID)
 		for jr.Next() {
 			var j Job
-			jr.Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator)
+			jr.Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.ScheduledAt)
 			j.ConversationProgress = a.conversationProgressForJob(j.ID)
 			l.Jobs = append(l.Jobs, j)
 		}
@@ -101,7 +115,7 @@ func (a *App) lanePath(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
-	var x struct{ Task, DoneDefinition string }
+	var x struct{ Task, DoneDefinition, ScheduledAt string }
 	var attachments []jobAttachment
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		var err error
@@ -110,7 +124,7 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 			fail(w, 400, err.Error())
 			return
 		}
-		x.Task, x.DoneDefinition = r.FormValue("task"), r.FormValue("doneDefinition")
+		x.Task, x.DoneDefinition, x.ScheduledAt = r.FormValue("task"), r.FormValue("doneDefinition"), r.FormValue("scheduledAt")
 	} else if decode(r, &x) != nil {
 		fail(w, 400, "invalid request")
 		return
@@ -118,6 +132,11 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 	task := strings.TrimSpace(x.Task)
 	if task == "" || len(task) > 4000 {
 		fail(w, 400, "task must be 1-4000 characters")
+		return
+	}
+	scheduled, err := scheduledTime(x.ScheduledAt)
+	if err != nil {
+		fail(w, 400, "scheduledAt must be an RFC3339 timestamp")
 		return
 	}
 	var p int
@@ -132,7 +151,7 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position) VALUES(?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, p)
+	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position,scheduled_at) VALUES(?,?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, p, scheduled)
 	if err != nil {
 		fail(w, 500, "could not create job")
 		return
@@ -158,8 +177,8 @@ func (a *App) createJob(w http.ResponseWriter, r *http.Request, lane int64) {
 
 func (a *App) createBoardJob(w http.ResponseWriter, r *http.Request, board int64) {
 	var x struct {
-		ColumnID, ProjectID  int64
-		Task, DoneDefinition string
+		ColumnID, ProjectID               int64
+		Task, DoneDefinition, ScheduledAt string
 	}
 	var attachments []jobAttachment
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
@@ -169,7 +188,7 @@ func (a *App) createBoardJob(w http.ResponseWriter, r *http.Request, board int64
 			fail(w, 400, parseErr.Error())
 			return
 		}
-		x.Task, x.DoneDefinition = r.FormValue("task"), r.FormValue("doneDefinition")
+		x.Task, x.DoneDefinition, x.ScheduledAt = r.FormValue("task"), r.FormValue("doneDefinition"), r.FormValue("scheduledAt")
 		x.ColumnID, _ = strconv.ParseInt(r.FormValue("columnId"), 10, 64)
 		x.ProjectID, _ = strconv.ParseInt(r.FormValue("projectId"), 10, 64)
 	} else if decode(r, &x) != nil {
@@ -183,6 +202,11 @@ func (a *App) createBoardJob(w http.ResponseWriter, r *http.Request, board int64
 	task := strings.TrimSpace(x.Task)
 	if task == "" || len(task) > 4000 {
 		fail(w, 400, "task must be 1-4000 characters")
+		return
+	}
+	scheduled, err := scheduledTime(x.ScheduledAt)
+	if err != nil {
+		fail(w, 400, "scheduledAt must be an RFC3339 timestamp")
 		return
 	}
 	tx, err := a.DB.Begin()
@@ -227,7 +251,7 @@ func (a *App) createBoardJob(w http.ResponseWriter, r *http.Request, board int64
 	if strings.TrimSpace(x.DoneDefinition) == "" {
 		warning = "Completion criteria generation deferred: add criteria manually or run the task as-is."
 	}
-	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position) VALUES(?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, position)
+	res, err := tx.Exec("INSERT INTO jobs(user_id,lane_id,title,task,done_definition,warning,position,scheduled_at) VALUES(?,?,?,?,?,?,?,?)", uid(r), lane, fallbackJobTitle(task), task, strings.TrimSpace(x.DoneDefinition), warning, position, scheduled)
 	if err != nil {
 		fail(w, 500, "could not create job")
 		return
@@ -405,7 +429,7 @@ func statusContent(old, next string) string {
 }
 func (a *App) jobDetail(w http.ResponseWriter, id int64) {
 	var j Job
-	a.DB.QueryRow("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived)
+	a.DB.QueryRow("SELECT j.id,j.lane_id,j.title,j.task,j.done_definition,j.warning,j.state,j.phase,j.position,j.attempt_count,j.created_at,j.updated_at,u.email,j.archived,j.scheduled_at FROM jobs j JOIN users u ON u.id=j.user_id WHERE j.id=?", id).Scan(&j.ID, &j.LaneID, &j.Title, &j.Task, &j.Done, &j.Warning, &j.State, &j.Phase, &j.Position, &j.Attempts, &j.Created, &j.Updated, &j.Creator, &j.Archived, &j.ScheduledAt)
 	j.ConversationProgress = a.conversationProgressForJob(id)
 	var sessionID string
 	if err := a.DB.QueryRow("SELECT tmux_session FROM job_runs WHERE job_id=? AND tmux_session<>'job-history' ORDER BY id DESC LIMIT 1", id).Scan(&sessionID); err == nil {

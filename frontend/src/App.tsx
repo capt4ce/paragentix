@@ -193,42 +193,44 @@ export function InvitationDialog({ invitation, close, accept }: { invitation: an
     <AsyncButton disabled={accepted} onClick={accept}>{accepted ? "Already accepted" : "Accept invitation"}</AsyncButton>
   </DialogShell>;
 }
-export function jobCreationRequest(form: { task: string; doneDefinition?: string; files?: File[]; columnId?: number | string; projectId?: number | string }): RequestInit {
+export function jobCreationRequest(form: { task: string; doneDefinition?: string; scheduledAt?: string; files?: File[]; columnId?: number | string; projectId?: number | string }): RequestInit {
 	validateAttachments(form.files || []);
+  const scheduledAt = form.scheduledAt ? new Date(form.scheduledAt).toISOString() : undefined;
   if (form.files?.length) {
     const body = new FormData();
     body.set("task", form.task);
     body.set("doneDefinition", form.doneDefinition || "");
     if (form.columnId) body.set("columnId", String(form.columnId));
     if (form.projectId) body.set("projectId", String(form.projectId));
+    if (scheduledAt) body.set("scheduledAt", scheduledAt);
     form.files.forEach((file) => body.append("files", file));
     return { method: "POST", body };
   }
   return {
     method: "POST",
-    body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition, ...(form.columnId ? { columnId: Number(form.columnId) } : {}), ...(form.projectId ? { projectId: Number(form.projectId) } : {}) }),
+    body: JSON.stringify({ task: form.task, doneDefinition: form.doneDefinition, ...(scheduledAt ? { scheduledAt } : {}), ...(form.columnId ? { columnId: Number(form.columnId) } : {}), ...(form.projectId ? { projectId: Number(form.projectId) } : {}) }),
   };
 }
 export const jobDraftKey = (user: string | number, board: string | number, entry: string) =>
   `paragentix:job-draft:${encodeURIComponent(String(user))}:${board}:${entry}`;
-export function loadJobDraft(key: string): { task: string; doneDefinition: string; columnId?: number; projectId?: number; newColumn?: boolean } | null {
+export function loadJobDraft(key: string): { task: string; doneDefinition: string; scheduledAt?: string; columnId?: number; projectId?: number; newColumn?: boolean } | null {
   try {
     const value = localStorage.getItem(key);
     if (!value) return null;
     const draft = JSON.parse(value);
     const columnId = Number(draft.columnId);
     const projectId = Number(draft.projectId);
-    return { task: String(draft.task || ""), doneDefinition: String(draft.doneDefinition || ""), ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), ...(draft.newColumn ? { newColumn: true } : {}) };
+    return { task: String(draft.task || ""), doneDefinition: String(draft.doneDefinition || ""), ...(draft.scheduledAt ? { scheduledAt: String(draft.scheduledAt) } : {}), ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), ...(draft.newColumn ? { newColumn: true } : {}) };
   } catch {
     return null;
   }
 }
-export function saveJobDraft(key: string, draft: { task?: string; doneDefinition?: string; columnId?: number | string; projectId?: number | string; newColumn?: boolean; files?: File[] }) {
+export function saveJobDraft(key: string, draft: { task?: string; doneDefinition?: string; scheduledAt?: string; columnId?: number | string; projectId?: number | string; newColumn?: boolean; files?: File[] }) {
   try {
     const columnId = Number(draft.columnId);
     const projectId = Number(draft.projectId);
-    const serializable = { task: draft.task || "", doneDefinition: draft.doneDefinition || "", ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), newColumn: !!draft.newColumn };
-    if (serializable.task || serializable.doneDefinition) localStorage.setItem(key, JSON.stringify(serializable));
+    const serializable = { task: draft.task || "", doneDefinition: draft.doneDefinition || "", ...(draft.scheduledAt ? { scheduledAt: draft.scheduledAt } : {}), ...(columnId ? { columnId } : {}), ...(projectId ? { projectId } : {}), newColumn: !!draft.newColumn };
+    if (serializable.task || serializable.doneDefinition || draft.scheduledAt) localStorage.setItem(key, JSON.stringify(serializable));
     else localStorage.removeItem(key);
   } catch {}
 }
@@ -254,6 +256,7 @@ const abbreviatedJobTask = (task: string) => {
   if (words.length <= 15 && task.length <= 60) return task;
   return words.slice(0, 15).join(" ").slice(0, 60).trimEnd() + "...";
 };
+const scheduledLabel = (value: string) => new Date(value.replace(" ", "T") + "Z").toLocaleString();
 export function JobCard({
   job,
   open,
@@ -273,6 +276,7 @@ export function JobCard({
       <button type="button" className="job-open" onClick={open}>
         <b title={identity}>{visibleIdentity}</b>
         <StatusBadge state={job.state} />
+        {job.state === "todo" && job.scheduled_at && <small>Scheduled {scheduledLabel(job.scheduled_at)}</small>}
         <JobConversationProgress progress={job.conversationProgress} compact />
       </button>
       <span className="job-creator">
@@ -315,6 +319,7 @@ export function JobDetailMeta({ job, notify = () => {} }: { job: any; notify?: (
       <p className="job-inspector-meta">
         <b>{job.state}</b> · attempt {job.attempt_count}
       </p>
+      {job.scheduled_at && <p className="job-inspector-meta">Scheduled {scheduledLabel(job.scheduled_at)}</p>}
       {job.session_id && (
         <div className="job-inspector-session">
           <span>Session ID: <code>{job.session_id.slice(0, 7)}</code></span>
@@ -646,7 +651,7 @@ export function App() {
     const draft = loadJobDraft(draftKeyFor(entry));
     const projects = chooseColumn ? await api(`/workspaces/${board.workspaceId}/projects`) : [];
     setDraftEntry(entry);
-    setForm({ columnId: chooseColumn && !draft?.columnId ? "" : draft?.columnId || columnId, projectId: draft?.projectId || projects[0]?.id, newColumn: chooseColumn ? !draft?.columnId : false, projects, chooseColumn, task: draft?.task || "", doneDefinition: draft?.doneDefinition || "" });
+    setForm({ columnId: chooseColumn && !draft?.columnId ? "" : draft?.columnId || columnId, projectId: draft?.projectId || projects[0]?.id, newColumn: chooseColumn ? !draft?.columnId : false, projects, chooseColumn, task: draft?.task || "", doneDefinition: draft?.doneDefinition || "", scheduledAt: draft?.scheduledAt || "" });
     setDialog("job");
   };
   const updateJobForm = (patch: Record<string, unknown>) => {
@@ -1502,6 +1507,15 @@ export function App() {
                       value={form.doneDefinition || ""}
                       onChange={(e) => updateJobForm({ doneDefinition: e.target.value })}
                     />
+                  </label>
+                  <label>
+                    Schedule send
+                    <input
+                      type="datetime-local"
+                      value={form.scheduledAt || ""}
+                      onChange={(e) => updateJobForm({ scheduledAt: e.target.value })}
+                    />
+                    <small>Jobs below this one wait until it starts.</small>
                   </label>
                   <label>
                     Additional context files

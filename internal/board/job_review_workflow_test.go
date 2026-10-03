@@ -51,8 +51,9 @@ ALTER TABLE jobs_legacy RENAME TO jobs;`)
 	}
 	defer a.Close()
 	var title string
-	if err = a.DB.QueryRow(`SELECT title FROM jobs WHERE id=?`, job).Scan(&title); err != nil || title != "legacy task" {
-		t.Fatalf("migrated title=%q err=%v", title, err)
+	var scheduled sql.NullString
+	if err = a.DB.QueryRow(`SELECT title,scheduled_at FROM jobs WHERE id=?`, job).Scan(&title, &scheduled); err != nil || title != "legacy task" || scheduled.Valid {
+		t.Fatalf("migrated title=%q scheduled=%v err=%v", title, scheduled, err)
 	}
 	if _, err = a.DB.Exec(`UPDATE jobs SET state='in_review' WHERE id=?`, job); err != nil {
 		t.Fatalf("in_review constraint was not migrated: %v", err)

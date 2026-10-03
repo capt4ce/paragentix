@@ -334,6 +334,15 @@ describe("approved job-detail UI consistency", () => {
   });
 });
 describe("project navigation and jobs", () => {
+	it("serializes browser-local schedules to the same UTC instant for JSON and multipart", () => {
+		const scheduledAt = "2026-10-03T14:30";
+		const expected = new Date(scheduledAt).toISOString();
+		const json = jobCreationRequest({ task: "JSON", scheduledAt });
+		expect(JSON.parse(String(json.body)).scheduledAt).toBe(expected);
+
+		const multipart = jobCreationRequest({ task: "Multipart", scheduledAt, files: [new File(["x"], "x.txt")] });
+		expect((multipart.body as FormData).get("scheduledAt")).toBe(expected);
+	});
 	it("builds multipart job requests when files are attached", () => {
 		const files = [new File(["alpha"], "a.txt"), new File(["beta"], "b.md")];
 		const request = jobCreationRequest({ task: "Review", doneDefinition: "Report", files });
@@ -452,14 +461,24 @@ describe("approved job workflow UX", () => {
     const top = jobDraftKey("user@example.com", 3, "top");
     const column = jobDraftKey("user@example.com", 3, "column:9");
     expect(top).not.toBe(column);
-    saveJobDraft(top, { task: "top task", doneDefinition: "done", columnId: 7, files: [new File(["x"], "secret.txt")] });
+    saveJobDraft(top, { task: "top task", doneDefinition: "done", scheduledAt: "2026-10-03T14:30", columnId: 7, files: [new File(["x"], "secret.txt")] });
     saveJobDraft(column, { task: "column task", doneDefinition: "", columnId: 9 });
-    expect(loadJobDraft(top)).toEqual({ task: "top task", doneDefinition: "done", columnId: 7 });
+    expect(loadJobDraft(top)).toEqual({ task: "top task", doneDefinition: "done", scheduledAt: "2026-10-03T14:30", columnId: 7 });
     expect(loadJobDraft(column)).toEqual({ task: "column task", doneDefinition: "", columnId: 9 });
     clearJobDraft(top);
     expect(loadJobDraft(top)).toBeNull();
     expect(loadJobDraft(column)?.task).toBe("column task");
   });
+
+	 it("uses an optional accessible native schedule control and shows queued schedules", () => {
+		const app = readFileSync("src/App.tsx", "utf8");
+		expect(app).toMatch(/<label>\s*Schedule send[\s\S]*type="datetime-local"/);
+		expect(app).toContain("Jobs below this one wait until it starts.");
+		const card = renderToStaticMarkup(createElement(JobCard, { job: { title: "Later", task: "Later", state: "todo", creatorName: "A", scheduled_at: "2026-10-03 16:30:00" }, open: () => {}, archive: async () => {} }));
+		expect(card).toContain("Scheduled");
+		const detail = renderToStaticMarkup(createElement(JobDetailMeta, { job: { title: "Later", state: "todo", attempt_count: 0, scheduled_at: "2026-10-03 16:30:00" } }));
+		expect(detail).toContain("Scheduled");
+	 });
 
   it("prevents only outside dismissal when requested", () => {
     const close = vi.fn();

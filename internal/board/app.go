@@ -37,6 +37,7 @@ type Job struct {
 	Updated              string                `json:"updated_at"`
 	Creator              string                `json:"creatorName"`
 	Archived             bool                  `json:"archived"`
+	ScheduledAt          *string               `json:"scheduled_at"`
 	ConversationProgress *ConversationProgress `json:"conversationProgress,omitempty"`
 }
 type Lane struct {
