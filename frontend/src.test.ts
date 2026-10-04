@@ -4,11 +4,218 @@ import { readFileSync } from "node:fs";
 import { createElement, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetail, refreshJobAndBoard, JobDetailMeta, JobTask, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
+import { api, App, AsyncButton, boardLocation, canComment, clearJobDraft, closeDetails, columnAnchor, columnPatch, ConversationBranchTree, ConversationBubble, conversationEventsBelongTo, conversationLocation, conversationReplyRequest, CreateBranchesDialog, DoneDefinitionField, eventSide, filterProjectJobs, initialConversationSelection, invitationEmailValid, invitationSessionAction, InvitationDialog, isConversationEvent, JobConversationProgress, JobTimeline, jobActionsVisible, jobColumn, jobCreationRequest, jobDraftKey, JobCard, JobDetail, refreshJobAndBoard, JobDetailMeta, JobTask, loadJobDraft, mergeNotifications, MergeReviewDialog, MobileConversationDrawer, moveColumn, navigateCommand, NotificationCenter, parseLocation, projectLocation, replyRequest, runWithToast, saveJobDraft, DialogShell, TimelineContent, Toast, useJobDetailHistory, validateAttachments, WorkspaceUserStatus } from "./src";
 import { cn } from "./src/lib/utils";
 import { StatusBadge } from "./src/components/jobs/StatusBadge";
 import { submitFormShortcut } from "./src/lib/forms";
+import { AppShell } from "./src/components/AppShell";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+describe("Command Center shell", () => {
+  const authenticatedFetch = (failProjects = false) => vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), location.origin);
+    let body: any = [];
+    if (url.pathname.endsWith("/auth/me")) body = { id: 1, email: "operator@example.com" };
+    else if (url.pathname.endsWith("/workspaces")) body = [{ id: 7, name: "Team", role: "owner", projectCount: 1, memberCount: 2 }];
+    else if (url.pathname.endsWith("/workspaces/7")) body = { id: 7, name: "Team", role: "owner", projectCount: 1, memberCount: 2 };
+    else if (url.pathname.endsWith("/projects/12")) body = { id: 12, name: "Alpha", jobs: [] };
+    else if (url.pathname.endsWith("/jobs/42/conversations")) body = { conversations: [] };
+    else if (url.pathname.endsWith("/jobs/42")) body = { job: { id: 42, task: "Test job", state: "todo" }, events: [] };
+    else if (url.pathname.endsWith("/projects") && failProjects) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+    else if (url.pathname.endsWith("/notifications")) body = { notifications: [], has_more: false, unread: 0 };
+    else if (url.pathname.endsWith("/invitations/active")) body = null;
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  it.each([
+    ["?project=12", "Projects", "?projects=1"],
+    ["?workspace=7&tab=Info", "Workspaces", "?workspaces=1"],
+  ])("navigates from detail %s to its actual list", async (search, label, expected) => {
+    history.replaceState({}, "", search);
+    vi.stubGlobal("fetch", authenticatedFetch());
+    const screen = render(createElement(App));
+    const buttons = await screen.findAllByRole("button", { name: label });
+    fireEvent.click(buttons[0]);
+    await waitFor(() => expect(location.search).toBe(expected));
+    screen.unmount(); vi.unstubAllGlobals();
+  });
+  it.each(["?project=12", "?workspace=7&tab=Info", "/jobs/42", "/?job=42"])("navigates from %s to Board", async (url) => {
+    history.replaceState({}, "", url);
+    vi.stubGlobal("fetch", authenticatedFetch());
+    vi.stubGlobal("EventSource", class { onmessage = null; close() {} });
+    const screen = render(createElement(App));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Board" }))[0]);
+    await waitFor(() => expect(location.search).toBe(""));
+    screen.unmount(); vi.unstubAllGlobals();
+  });
+  it("preserves the rendered workspace tab and URL when tab loading fails", async () => {
+    history.replaceState({}, "", "?workspace=7&tab=Info");
+    const normalFetch = authenticatedFetch();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.endsWith("/workspaces/7/projects")) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      return normalFetch(input);
+    }));
+    const screen = render(createElement(App));
+    await screen.findByRole("tab", { name: "Info", selected: true });
+    await waitFor(() => expect(location.search).toBe("?workspace=7&tab=Info"));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Projects" }), { button: 0 });
+    await screen.findByRole("alert");
+    expect(screen.getByRole("tab", { name: "Info", selected: true })).toBeTruthy();
+    expect(location.search).toBe("?workspace=7&tab=Info");
+  });
+  it("preserves the projects list and URL when project detail loading fails", async () => {
+    history.replaceState({}, "", "?projects=1");
+    const normalFetch = authenticatedFetch();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.endsWith("/projects/12")) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      if (url.pathname.endsWith("/projects")) return new Response(JSON.stringify([{ id: 12, name: "Alpha", workspaceName: "Team" }]), { status: 200 });
+      return normalFetch(input);
+    }));
+    const screen = render(createElement(App));
+    fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Alpha" })).toBeTruthy();
+    expect(location.search).toBe("?projects=1");
+  });
+  it("preserves the workspace board list and URL when board loading fails", async () => {
+    history.replaceState({}, "", "?workspace=7&tab=Boards");
+    const normalFetch = authenticatedFetch();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.endsWith("/workspaces/7/boards")) return new Response(JSON.stringify([{ id: 4, name: "Ops", columnCount: 1 }]), { status: 200 });
+      if (url.pathname.endsWith("/boards/4/columns")) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      return normalFetch(input);
+    }));
+    const screen = render(createElement(App));
+    fireEvent.click(await screen.findByRole("button", { name: "Open board" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("heading", { name: "Team" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Boards", selected: true })).toBeTruthy();
+    expect(location.search).toBe("?workspace=7&tab=Boards");
+  });
+  it("preserves the selected board, columns, and URL when top-bar board switching fails", async () => {
+    history.replaceState({}, "", "?board=4");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      let body: any = [];
+      if (url.pathname.endsWith("/auth/me")) body = { id: 1, email: "operator@example.com" };
+      else if (url.pathname.endsWith("/boards")) body = [{ id: 4, name: "Ops", workspaceName: "Team" }, { id: 5, name: "Next", workspaceName: "Team" }];
+      else if (url.pathname.endsWith("/boards/4/columns")) body = [{ id: 8, name: "Todo", jobs: [] }];
+      else if (url.pathname.endsWith("/boards/5/columns")) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      else if (url.pathname.endsWith("/notifications")) body = { notifications: [], has_more: false, unread: 0 };
+      else if (url.pathname.endsWith("/invitations/active")) body = null;
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const screen = render(createElement(App));
+    const select = await screen.findByRole("combobox", { name: "Workspace board" });
+    expect((select as HTMLSelectElement).value).toBe("4");
+    fireEvent.change(select, { target: { value: "5" } });
+    await screen.findByRole("alert");
+    expect((select as HTMLSelectElement).value).toBe("4");
+    expect(location.search).toBe("?board=4");
+  });
+  it("keeps a successfully rendered detail/tab coherent when later history restoration fails", async () => {
+    history.replaceState({}, "", "?workspaces=1");
+    let failProjects = false;
+    const normalFetch = authenticatedFetch();
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), location.origin);
+      if (failProjects && url.pathname.endsWith("/projects")) return new Response(JSON.stringify({ error: "offline" }), { status: 503 });
+      return normalFetch(input);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const screen = render(createElement(App));
+    await screen.findByRole("heading", { name: "Workspaces" });
+    fireEvent.click(screen.getByRole("button", { name: /^Team/ }));
+    await screen.findByRole("heading", { name: "Team" });
+    expect(screen.getByRole("tab", { name: "Info", selected: true })).toBeTruthy();
+    await waitFor(() => expect(location.search).toBe("?workspace=7&tab=Info"));
+    failProjects = true;
+    history.replaceState({}, "", "?projects=1");
+    dispatchEvent(new PopStateEvent("popstate"));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("heading", { name: "Team" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Info", selected: true })).toBeTruthy();
+    expect(location.search).toBe("?workspace=7&tab=Info");
+    screen.unmount(); vi.unstubAllGlobals();
+  });
+  it.each([
+    ["/jobs/42", "Job detail"],
+    ["/?job=42", "Conversation"],
+  ])("shares notification and actionable account controls on %s", async (url, label) => {
+    history.replaceState({}, "", url);
+    vi.stubGlobal("fetch", authenticatedFetch());
+    vi.stubGlobal("EventSource", class { onmessage = null; close() {} });
+    const screen = render(createElement(App));
+    await screen.findByText(label);
+    expect(screen.getByRole("button", { name: "Notifications" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Account menu"));
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Profile" }));
+    expect(screen.getByRole("dialog", { name: "profile" })).toBeTruthy();
+    expect(screen.getByText("operator@example.com", { selector: ".dialog-shell-body p" })).toBeTruthy();
+    screen.unmount(); vi.unstubAllGlobals();
+  });
+  it("loads before committing navigation and avoids active history duplicates", async () => {
+    const commit = vi.fn();
+    const push = vi.fn();
+    const load = vi.fn(async () => ["project"]);
+    await navigateCommand("projects", "board", load, commit, push, 4);
+    expect(load).toHaveBeenCalledOnce();
+    expect(commit.mock.invocationCallOrder[0]).toBeGreaterThan(load.mock.invocationCallOrder[0]);
+    expect(push).toHaveBeenCalledWith("?projects=1");
+    await navigateCommand("projects", "projects", load, commit, push, 4);
+    expect(push).toHaveBeenCalledOnce();
+  });
+  it("does not commit navigation when loading fails", async () => {
+    const commit = vi.fn();
+    await expect(navigateCommand("projects", "board", async () => { throw Error("offline"); }, commit, vi.fn(), 4)).rejects.toThrow("offline");
+    expect(commit).not.toHaveBeenCalled();
+  });
+  it("provides desktop navigation and an accessible mobile drawer without prototype-only destinations", () => {
+    const screen = render(createElement(AppShell, {
+      active: "board",
+      email: "operator@example.com",
+      onNavigate: vi.fn(),
+      topbar: createElement("span", null, "Board controls"),
+    }, createElement("main", null, "Workspace")));
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Board" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Open navigation" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
+    expect(screen.getByRole("dialog", { name: "Navigation" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+  });
+  it("traps drawer focus, locks scrolling, closes on Escape, and restores opener focus", async () => {
+    const screen = render(createElement(AppShell, { active: "board", email: "operator@example.com", onNavigate: vi.fn() }, createElement("main", null, createElement("button", null, "Background"))));
+    const opener = screen.getByRole("button", { name: "Open navigation" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(screen.getByRole("dialog", { name: "Navigation" }).contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull());
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(opener);
+  });
+  it("keeps command-center tokens, local board overflow, and mobile touch targets in the stylesheet", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toContain("--command-cyan:#50e3c2");
+    expect(css).toMatch(/\.command-shell\{[^}]*grid-template-columns:220px minmax\(0,1fr\)/);
+    expect(css).toMatch(/\.board\{[^}]*overflow-x:auto/);
+    expect(css).toMatch(/@media\(max-width:800px\)[\s\S]*min-height:44px/);
+  });
+  it("uses component-level command hooks on every core surface", () => {
+    const app = readFileSync("src/App.tsx", "utf8");
+    const conversation = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
+    for (const hook of ["board-lane", "board-job-card", "projects-surface", "workspaces-surface", "workspace-detail-surface", "job-detail-surface"]) expect(app).toContain(hook);
+    for (const hook of ["conversation-command-header", "conversation-command-tree", "conversation-command-thread", "conversation-command-footer"]) expect(conversation).toContain(hook);
+  });
+});
 describe("job board synchronization", () => {
   it("offers moving jobs in every status", () => {
     const move = vi.fn(async () => {});
@@ -195,7 +402,7 @@ describe("conversation branching", () => {
 
   it("keeps the laptop composer and fork action visible below the scrolling thread", () => {
     const source = readFileSync("src/components/conversations/ConversationPage.tsx", "utf8");
-    expect(source).toMatch(/className="conversation-footer"[\s\S]*className="conversation-composer"[\s\S]*className="conversation-fork-link"/);
+    expect(source).toMatch(/className="conversation-footer [^"]*"[\s\S]*className="conversation-composer"[\s\S]*className="conversation-fork-link"/);
     const css = readFileSync("src/index.css", "utf8");
     expect(css).toMatch(/\.conversation-page\{[^}]*grid-template-rows:auto minmax\(0,1fr\)[^}]*overflow:hidden/);
     expect(css).toMatch(/\.conversation-workspace\{[^}]*min-height:0[^}]*overflow:hidden/);
@@ -381,7 +588,7 @@ describe("column reorder", () => {
 });
 describe("account menu", () => {
   it("links the Paragentix wordmark to the app homepage", () => {
-    expect(readFileSync("src/App.tsx", "utf8")).toMatch(/<a href=\{base\} aria-label="Paragentix home">\s*Paragentix\s*<\/a>/);
+    expect(readFileSync("src/components/AppShell.tsx", "utf8")).toContain('href="/" aria-label="Paragentix home"');
   });
   it("closes native details", () => {
     const d = document.createElement("details"); d.open = true;
@@ -690,7 +897,7 @@ describe("job detail session", () => {
       fullPage: true,
     }));
 
-    expect(html).toContain('<main class="job-detail-page dialog-shell-body" aria-label="Job detail">');
+    expect(html).toContain('<main class="job-detail-page dialog-shell-body command-surface job-detail-surface" aria-label="Job detail">');
     expect(html).toContain('href="https://example.test/spec"');
     expect(html).toContain('href="https://example.test/notes"');
     expect(html).toContain('>notes</a>');

@@ -28,13 +28,13 @@ export function DialogShell({
   className,
 }: DialogShellProps) {
   return <Dialog open={open} onOpenChange={nextOpen => { if (!nextOpen) close(); }}><DialogContent
-    className={cn(inspector ? "inspector" : "modal", className)}
+    className={cn("command-dialog", inspector ? "inspector command-inspector" : "modal", className)}
     onPointerDownOutside={event => { if (preventOutsideClose) event.preventDefault(); }}
     onInteractOutside={event => { if (preventOutsideClose) event.preventDefault(); }}
     onEscapeKeyDown={event => { if (preventOutsideClose) event.preventDefault(); }}
   >
     <DialogHeader className="dialog-shell-header">
-      <DialogTitle>{title}</DialogTitle>
+      <DialogTitle className="dialog-shell-title">{title}</DialogTitle>
       {description && <DialogDescription>{description}</DialogDescription>}
     </DialogHeader>
     <div className="dialog-shell-body">{children}</div>

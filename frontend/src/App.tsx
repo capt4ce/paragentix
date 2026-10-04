@@ -16,6 +16,21 @@ import { Badge } from "@/components/ui/badge";
 import { ConversationPage, CreateBranchesDialog, JobConversationProgress } from "@/components/conversations/ConversationPage";
 import { Archive, Copy, MoveRight, Paperclip, Pencil, Plus, Send } from "lucide-react";
 import { submitFormShortcut } from "@/lib/forms";
+import { AppShell } from "@/components/AppShell";
+type CommandDestination = "board" | "projects" | "workspaces";
+export async function navigateCommand(
+  destination: CommandDestination,
+  active: CommandDestination | undefined,
+  loadProjects: () => Promise<any[]>,
+  commit: (destination: CommandDestination, projects?: any[]) => void,
+  push: (url: string) => void,
+  boardId?: number,
+) {
+  if (destination === active) return;
+  const projects = destination === "projects" ? await loadProjects() : undefined;
+  commit(destination, projects);
+  push(destination === "board" ? (boardId ? boardLocation(boardId) : base) : `?${destination}=1`);
+}
 export async function jobColumn<T>(columns: T[], create: () => Promise<T>) {
   return columns.at(-1) ?? (await create());
 }
@@ -188,9 +203,8 @@ export const invitationSessionAction = (sessionEmail: string, invitationEmail: s
 export const invitationEmailValid = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 export function InvitationDialog({ invitation, close, accept }: { invitation: any; close: () => void; accept: () => Promise<void> | void }) {
   const accepted = invitation.status === "accepted";
-  return <DialogShell title="Workspace invitation" close={close}>
-    <p>You were invited to {invitation.workspaceName}.</p>
-    <AsyncButton disabled={accepted} onClick={accept}>{accepted ? "Already accepted" : "Accept invitation"}</AsyncButton>
+  return <DialogShell title="Workspace invitation" description="A workspace operator invited you to collaborate." close={close} footer={<AsyncButton disabled={accepted} onClick={accept}>{accepted ? "Already accepted" : "Accept invitation"}</AsyncButton>}>
+    <section className="invitation-card"><small>WORKSPACE</small><strong>{invitation.workspaceName}</strong><p>Accept to access its projects, boards, and jobs.</p></section>
   </DialogShell>;
 }
 export function jobCreationRequest(form: { task: string; doneDefinition?: string; scheduledAt?: string; files?: File[]; columnId?: number | string; projectId?: number | string }): RequestInit {
@@ -272,7 +286,7 @@ export function JobCard({
   const identity = job.title || job.task;
   const visibleIdentity = abbreviatedJobTask(identity);
   return (
-    <article className={"job " + job.state}>
+    <article className={"job board-job-card " + job.state}>
       <button type="button" className="job-open" onClick={open}>
         <b title={identity}>{visibleIdentity}</b>
         <StatusBadge state={job.state} />
@@ -559,7 +573,7 @@ export function JobDetail({
     </>
   );
   return fullPage
-    ? <main className="job-detail-page dialog-shell-body" aria-label="Job detail">{content}</main>
+    ? <main className="job-detail-page dialog-shell-body command-surface job-detail-surface" aria-label="Job detail">{content}</main>
     : <DialogShell title="Job detail" close={close} inspector>{content}</DialogShell>;
 }
 export function JobDetailPage({ jobId }: { jobId: number }) {
@@ -575,8 +589,8 @@ export function JobDetailPage({ jobId }: { jobId: number }) {
     }
   }, [jobId]);
   useEffect(() => { void loadJob(); }, [loadJob]);
-  if (error) return <main className="job-detail-page" role="alert">{error}</main>;
-  if (!job) return <main className="job-detail-page" aria-busy="true">Loading job detail…</main>;
+  if (error) return <main className="job-detail-page command-surface command-error" role="alert">{error}</main>;
+  if (!job) return <main className="job-detail-page command-surface command-loading" aria-busy="true">Loading job detail…</main>;
   return (
     <>
       <JobDetail job={job} close={() => {}} refresh={loadJob} notify={setToast} fullPage />
@@ -694,28 +708,25 @@ export function App() {
   };
   const restore = async () => {
     const route = parseLocation(location.search, location.pathname);
-    setView(route.view);
     if (route.view === "workspace") {
-      const d = await api("/workspaces/" + route.workspaceId);
-      setDetail(d);
-      setTab(route.tab!);
-      if (route.tab === "Settings")
-        setSettings(await api(`/workspaces/${route.workspaceId}/settings`));
-      setItems(
-        route.tab === "Info" || route.tab === "Settings"
-          ? []
-          : await api(
-              `/workspaces/${route.workspaceId}/${route.tab!.toLowerCase()}`,
-            ),
-      );
+      const nextDetail = await api("/workspaces/" + route.workspaceId);
+      const nextSettings = route.tab === "Settings" ? await api(`/workspaces/${route.workspaceId}/settings`) : undefined;
+      const nextItems = route.tab === "Info" || route.tab === "Settings" ? [] : await api(`/workspaces/${route.workspaceId}/${route.tab!.toLowerCase()}`);
+      setDetail(nextDetail); setTab(route.tab!); setSettings(nextSettings); setItems(nextItems);
     } else if (route.view === "projects") {
-      setItems(await api("/projects"));
-      setDetail(undefined);
+      const nextItems = await api("/projects");
+      setItems(nextItems); setDetail(undefined);
     } else if (route.view === "project") {
-      setDetail(await api("/projects/" + route.projectId));
-      setJobStatus("all");
-      setJobSearch("");
+      const nextDetail = await api("/projects/" + route.projectId);
+      setDetail(nextDetail); setJobStatus("all"); setJobSearch("");
     }
+    setView(route.view);
+    lastRenderedUrl.current = location.href;
+  };
+  const lastRenderedUrl = useRef(location.href);
+  const commitUrl = (url: string, replace = false) => {
+    history[replace ? "replaceState" : "pushState"]({}, "", url);
+    lastRenderedUrl.current = location.href;
   };
   useEffect(() => {
     api("/auth/me")
@@ -753,7 +764,10 @@ export function App() {
     return () => document.removeEventListener("pointerdown", outside);
   }, []);
   useEffect(() => {
-    const pop = () => restore().catch((e) => setError(String(e)));
+    const pop = () => restore().catch((e) => {
+      history.replaceState(history.state, "", lastRenderedUrl.current);
+      setError(String(e));
+    });
     addEventListener("popstate", pop);
     return () => removeEventListener("popstate", pop);
   }, []);
@@ -776,20 +790,24 @@ export function App() {
     setView("workspace");
     setTab("Info");
     setItems([]);
-    history.pushState({}, "", `?workspace=${w.id}&tab=Info`);
+    commitUrl(`?workspace=${w.id}&tab=Info`);
   };
   const chooseTab = async (t: string) => {
     setLoadingTab(t);
-    setTab(t);
-    history.pushState({}, "", `?workspace=${detail.id}&tab=${t}`);
     try {
-      if (t === "Settings")
-        setSettings(await api(`/workspaces/${detail.id}/settings`));
-      setItems(
+      const nextSettings = t === "Settings"
+        ? await api(`/workspaces/${detail.id}/settings`)
+        : undefined;
+      const nextItems =
         t === "Info" || t === "Settings"
           ? []
-          : await api(`/workspaces/${detail.id}/${t.toLowerCase()}`),
-      );
+          : await api(`/workspaces/${detail.id}/${t.toLowerCase()}`);
+      setTab(t);
+      setSettings(nextSettings);
+      setItems(nextItems);
+      commitUrl(`?workspace=${detail.id}&tab=${t}`);
+    } catch (e) {
+      setError(String(e));
     } finally {
       setLoadingTab("");
     }
@@ -889,9 +907,6 @@ export function App() {
         invitation={route.view === "invitation" ? route.token : undefined}
       />
     );
-  if (route.view === "conversation")
-    return <ConversationPage jobId={route.jobId} initialConversationId={route.conversationId} />;
-  if (route.view === "job") return <JobDetailPage jobId={route.jobId} />;
   const openNotification = async (n: any) => {
     await api(`/notifications/${n.id}`, {
       method: "PATCH",
@@ -904,14 +919,28 @@ export function App() {
     if (n.job_id) setJob(jobDetail(await api(`/jobs/${n.job_id}`)));
     if (n.invitation_id) setInvitation(await api(`/invitations/id/${n.invitation_id}`));
   };
+  const navigate = async (destination: CommandDestination) => {
+    const active = view === "projects" ? "projects" : view === "workspaces" ? "workspaces" : view === "board" && route.view === "board" ? "board" : undefined;
+    try {
+      await navigateCommand(destination, active, () => api("/projects"), (next, projects) => {
+        if (projects) { setItems(projects); setDetail(undefined); }
+        setView(next);
+      }, commitUrl, board?.id);
+    } catch (e) {
+      const message = String(e);
+      setError(message);
+      setToast({ message, type: "error" });
+    }
+  };
+  const shellActions = <div className="header-actions">
+    <NotificationCenter notifications={notifications} unread={unread} more={notificationMore} onOpen={openNotification} onMarkRead={async () => { await api("/notifications/mark-read", { method: "POST", body: "{}" }); setNotifications(notifications.map((n) => ({ ...n, read: true }))); setUnread(0); }} onLoadMore={async () => { setNotificationMore(false); const p = await api(`/notifications?limit=10&before=${notifications.at(-1)?.id}`); setNotifications(mergeNotifications(notifications, p.notifications)); setNotificationMore(p.has_more); }} />
+    <details ref={menu} className="account"><summary aria-label="Account menu"><span>{me.email[0].toUpperCase()}</span></summary><div className="accountmenu"><strong>{me.email}</strong><button onClick={() => { closeDetails(menu); setDialog("profile"); }}>Profile</button><AsyncButton onClick={async () => { closeDetails(menu); await api("/auth/logout", { method: "POST" }); location.reload(); }}>Sign out</AsyncButton></div></details>
+  </div>;
+  const profileDialog = dialog === "profile" && <DialogShell title="profile" close={() => setDialog("")}><p>{me.email}</p></DialogShell>;
+  if (route.view === "conversation" || route.view === "job") return <AppShell active="board" email={me.email} onNavigate={(destination) => { void navigate(destination); }} topbar={<div className="command-topbar-content"><div className="command-breadcrumb">{route.view === "conversation" ? "Conversation" : "Job detail"}</div>{shellActions}</div>}><>{route.view === "conversation" ? <ConversationPage jobId={route.jobId} initialConversationId={route.conversationId} /> : <JobDetailPage jobId={route.jobId} />}{profileDialog}<Toast toast={toast} onDismiss={dismissToast} /></></AppShell>;
   return (
-    <>
-      <header>
-        <h1>
-          <a href={base} aria-label="Paragentix home">
-            Paragentix
-          </a>
-        </h1>
+    <AppShell active={view === "projects" || view === "project" ? "projects" : view === "workspaces" || view === "workspace" ? "workspaces" : "board"} email={me.email} onNavigate={(destination) => { void navigate(destination); }} topbar={<div className="command-topbar-content">
+        <div className="command-breadcrumb" aria-label="Breadcrumb"><span>{view === "project" ? "Projects" : view === "workspace" ? "Workspaces" : view}</span>{detail?.name && <><b>/</b><strong>{detail.name}</strong></>}</div>
         <nav className="board-controls">
           {view === "board" && (
             <>
@@ -921,8 +950,15 @@ export function App() {
                   value={board?.id || ""}
                   onChange={async (e) => {
                     const b = boards.find((x) => x.id === Number(e.target.value));
-                    setBoard(b);
-                    setCols(await api(`/boards/${b.id}/columns`));
+                    if (!b) return;
+                    try {
+                      const nextCols = await api(`/boards/${b.id}/columns`);
+                      setBoard(b);
+                      setCols(nextCols);
+                      commitUrl(boardLocation(b.id));
+                    } catch (e) {
+                      setError(String(e));
+                    }
                   }}
                 >
                   {boards.map((b) => (
@@ -953,82 +989,11 @@ export function App() {
             </>
           )}
         </nav>
-        <div className="header-actions">
-          <NotificationCenter
-            notifications={notifications}
-            unread={unread}
-            more={notificationMore}
-            onOpen={openNotification}
-            onMarkRead={async () => {
-              await api("/notifications/mark-read", {
-                method: "POST",
-                body: "{}",
-              });
-              setNotifications(
-                notifications.map((n) => ({ ...n, read: true })),
-              );
-              setUnread(0);
-            }}
-            onLoadMore={async () => {
-              setNotificationMore(false);
-              const p = await api(
-                `/notifications?limit=10&before=${notifications.at(-1)?.id}`,
-              );
-              setNotifications(
-                mergeNotifications(notifications, p.notifications),
-              );
-              setNotificationMore(p.has_more);
-            }}
-          />
-          <details ref={menu} className="account">
-            <summary aria-label="Account menu">
-              <span>{me.email[0].toUpperCase()}</span>
-            </summary>
-            <div className="accountmenu">
-              <strong>{me.email}</strong>
-              <AsyncButton
-                onClick={async () => {
-                  closeDetails(menu);
-                  setItems(await api("/projects"));
-                  setDetail(undefined);
-                  setView("projects");
-                  history.pushState({}, "", "?projects=1");
-                }}
-              >
-                Projects
-              </AsyncButton>
-              <button
-                onClick={() => {
-                  closeDetails(menu);
-                  setView("workspaces");
-                  history.pushState({}, "", "?workspaces=1");
-                }}
-              >
-                Workspaces
-              </button>
-              <button
-                onClick={() => {
-                  closeDetails(menu);
-                  setDialog("profile");
-                }}
-              >
-                Profile
-              </button>
-              <AsyncButton
-                onClick={async () => {
-                  closeDetails(menu);
-                  await api("/auth/logout", { method: "POST" });
-                  location.reload();
-                }}
-              >
-                Sign out
-              </AsyncButton>
-            </div>
-          </details>
-        </div>
-      </header>
+        {shellActions}
+      </div>}>
+      {error && <p className="command-route-error" role="alert">{error}</p>}
       {view === "projects" && (
-        <main className="page">
+        <main className="page command-surface projects-surface">
           <div className="pagehead"><h2>Projects</h2></div>
           <div className="table-wrap">
             <table>
@@ -1036,10 +1001,11 @@ export function App() {
               <tbody>{items.map((p) => (
                 <tr key={p.id} className="clickable-row">
                   <td><AsyncButton className="link" onClick={async () => {
-                    setView("project");
-                    history.pushState({}, "", projectLocation(p.id));
-                    try { setDetail(await api(`/projects/${p.id}`)); } catch (e) { setError(String(e)); }
-                    setJobStatus("all"); setJobSearch("");
+                    try {
+                      const nextDetail = await api(`/projects/${p.id}`);
+                      setDetail(nextDetail); setView("project"); commitUrl(projectLocation(p.id));
+                      setJobStatus("all"); setJobSearch("");
+                    } catch (e) { setError(String(e)); }
                   }}>{p.name}</AsyncButton></td><td>{p.workspaceName}</td><td><code>{p.directory}</code></td><td>{p.columnCount}</td><td>{p.jobCount}</td>
                 </tr>
               ))}</tbody>
@@ -1048,8 +1014,8 @@ export function App() {
         </main>
       )}
       {view === "project" && detail && (
-        <main className="page">
-          <AsyncButton className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); history.pushState({}, "", "?projects=1"); }}>← Projects</AsyncButton>
+        <main className="page command-surface project-detail-surface">
+          <AsyncButton className="back" onClick={async () => { setItems(await api("/projects")); setDetail(undefined); setView("projects"); commitUrl("?projects=1"); }}>← Projects</AsyncButton>
           <section className="panel project-details"><h2>{detail.name}</h2><span>Workspace: {detail.workspaceName}</span><code>{detail.directory}</code></section>
           <div className="pagehead"><h3>Jobs</h3><div className="job-filters">
             <Input aria-label="Search job titles" placeholder="Search title…" value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} />
@@ -1061,7 +1027,7 @@ export function App() {
         </main>
       )}
       {view === "workspaces" && (
-        <main className="page">
+        <main className="page command-surface workspaces-surface">
           <div className="pagehead">
             <h2>Workspaces</h2>
             <button
@@ -1075,7 +1041,7 @@ export function App() {
           </div>
           {ws.map((w) => (
             <section
-              className="panel clickable-row"
+              className="panel clickable-row workspace-card"
               key={w.id}
               role="button"
               tabIndex={0}
@@ -1093,11 +1059,11 @@ export function App() {
         </main>
       )}
       {view === "workspace" && detail && (
-        <main className="page">
+        <main className="page command-surface workspace-detail-surface">
           <button
             onClick={() => {
               setView("workspaces");
-              history.pushState({}, "", "?workspaces=1");
+              commitUrl("?workspaces=1");
             }}
           >
             ← Workspaces
@@ -1146,7 +1112,7 @@ export function App() {
                 )}
               </div>
               {items.map((p) => (
-                <section className="panel">
+                <section className="panel" key={p.id}>
                   <b>{p.name}</b>
                   <code>{p.directory}</code>
                   {detail.role === "owner" && (
@@ -1165,15 +1131,16 @@ export function App() {
           )}
           {tab === "Boards" &&
             items.map((b) => (
-              <section className="panel">
+              <section className="panel" key={b.id}>
                 <b>{b.name}</b>
                 <span>{b.columnCount} columns</span>
                 <AsyncButton
                   onClick={async () => {
-                    setBoard(boards.find((x) => x.id === b.id));
-                    setView("board");
-                    history.pushState({}, "", boardLocation(b.id));
-                    setCols(await api(`/boards/${b.id}/columns`));
+                    try {
+                      const nextCols = await api(`/boards/${b.id}/columns`);
+                      setBoard(boards.find((x) => x.id === b.id));
+                      setCols(nextCols); setView("board"); commitUrl(boardLocation(b.id));
+                    } catch (e) { setError(String(e)); }
                   }}
                 >
                   Open board
@@ -1360,9 +1327,9 @@ export function App() {
               </AsyncButton>
             )}
           </nav>
-          <main className="board">
+          <main className="board command-surface">
             {cols.map((c) => (
-              <section id={columnAnchor(c.id)} key={c.id} className="lane">
+              <section id={columnAnchor(c.id)} key={c.id} className="lane board-lane">
                 <div className="lanehead">
                   <b>{c.name}</b>
                   <span className="lane-actions">
@@ -1432,7 +1399,7 @@ export function App() {
           </main>
         </>
       )}
-      {dialog && (
+      {dialog && dialog !== "profile" && (
         <DialogShell title={dialog} close={() => setDialog("")} preventOutsideClose={dialog === "job"}>
           <form onKeyDown={submitFormShortcut} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           {error && <p role="alert">{error}</p>}
@@ -1560,7 +1527,7 @@ export function App() {
                     }
                   >
                     {ws.map((w) => (
-                      <option value={w.id}>{w.name}</option>
+                      <option key={w.id} value={w.id}>{w.name}</option>
                     ))}
                   </select>
                 </label>
@@ -1578,7 +1545,7 @@ export function App() {
                     >
                       <option value="">Select…</option>
                       {form.projects?.map((p: any) => (
-                        <option value={p.id}>{p.name}</option>
+                        <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
                     </select>
                   </label>
@@ -1625,6 +1592,7 @@ export function App() {
           </form>
         </DialogShell>
       )}
+      {profileDialog}
       {job && (
         <JobDetail
           job={job}
@@ -1638,10 +1606,10 @@ export function App() {
         await api(path, { method: "POST" });
         setInvitation(undefined);
         setView("board");
-        history.pushState({}, "", base);
         await load();
+        commitUrl(base);
       }} />}
       <Toast toast={toast} onDismiss={dismissToast} />
-    </>
+    </AppShell>
   );
 }

@@ -12,11 +12,11 @@ export function Toast({ toast, onDismiss }: { toast?: ToastMessage; onDismiss?: 
   if (!toast) return null;
   return (
     <div
-      className={`toast${toast.type === "error" ? " error" : ""}`}
+      className={`toast command-toast ${toast.type}`}
       role={toast.type === "error" ? "alert" : "status"}
       aria-live={toast.type === "error" ? "assertive" : "polite"}
     >
-      {toast.message}
+      <span className="toast-indicator" aria-hidden="true" />{toast.message}
     </div>
   );
 }

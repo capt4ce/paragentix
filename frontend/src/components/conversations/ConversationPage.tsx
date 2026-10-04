@@ -404,8 +404,8 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
   const mainCanReply = active?.parentConversationId || ["in_progress", "blocked", "done"].includes(job?.state);
   const readOnly = !!job?.archived;
   return (
-    <main className="conversation-page">
-      <header className="conversation-page-header">
+    <main className="conversation-page command-surface">
+      <header className="conversation-page-header conversation-command-header">
         <a href={base} className="conversation-wordmark">Paragentix</a>
         <div><h1>{job?.task ?? "Conversation"}</h1><p>{breadcrumb}</p></div>
         {job && <StatusBadge state={job.state} />}
@@ -416,7 +416,7 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
         }}>Merge back to parent</Button>}
       </header>
       <div className={`conversation-workspace ${treeCollapsed ? "tree-collapsed" : ""}`}>
-        <aside className="conversation-tree-pane">
+        <aside className="conversation-tree-pane conversation-command-tree">
           <Button type="button" variant="ghost" size="icon" aria-label="Collapse conversations pane" onClick={() => setTreeCollapsed(true)}><ChevronLeft /></Button>
           <ConversationBranchTree conversations={conversations} activeId={activeId} onSelect={selectConversation} />
         </aside>
@@ -429,13 +429,13 @@ export function ConversationPage({ jobId, initialConversationId }: { jobId: numb
           onClose={() => setMobileTree(false)}
           onSelect={selectConversation}
         />
-        <section className="conversation-focus">
-          <div className="conversation-thread">
+        <section className="conversation-focus conversation-command-focus">
+          <div className="conversation-thread conversation-command-thread">
             {error && <p role="alert">{error}</p>}
             {events.map((event) => <ConversationBubble key={event.id} event={event} onFork={(eventId) => setForkPoint({ conversationId: activeId, eventId })} readOnly={readOnly} />)}
             {!events.length && <p>No conversation yet</p>}
           </div>
-          <div className="conversation-footer">
+          <div className="conversation-footer conversation-command-footer">
             {files.length > 0 && <small>{files.length} file{files.length === 1 ? "" : "s"} attached</small>}
             {!readOnly && mainCanReply && <form className="conversation-composer" onKeyDown={submitFormShortcut} onSubmit={async (event) => {
               event.preventDefault();
